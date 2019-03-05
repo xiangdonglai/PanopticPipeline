@@ -1,0 +1,6 @@
+[submodule "domeCalibrator"]
+	path = domeCalibrator
+	url = https://github.com/CMU-Perceptual-Computing-Lab/domeCalibrator.git
+[submodule "panopticstudio"]
+	path = panopticstudio
+	url = https://github.com/CMU-Perceptual-Computing-Lab/panopticstudio.git
