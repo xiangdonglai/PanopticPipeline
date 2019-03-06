@@ -97,26 +97,26 @@ done
 # 	matlab -nojvm -nodisplay -r "Compute_MK2NVM('$myCalibPath','$kinectCalibPath','$mk2nvmPath'); exit"
 # 	exit;
 # fi
-# 
-# 
-# #copy jpg file for dummy
-# for n in $path/*
-# do
-# echo copy $n to full
-# `mkdir $path/full`
-# 	for img in $n/*.jpg
-# 	do
-# 		cp -v $img $path/full
-# 	done
-# break;
-# done
-# 
-# #Merge Matchin Info
-# echo ""
-# echo "Merge Matchings"
-# DomeCorres/DomeCorres.exe $path
-# 
-# 
+ 
+ 
+#copy jpg file for dummy
+for n in $path/*
+do
+echo copy $n to full
+`mkdir $path/full`
+	for img in $n/*.jpg
+	do
+		cp -v $img $path/full
+	done
+break;
+done
+
+#Merge Matchin Info
+echo ""
+echo "Merge Matchings"
+../../Social-Capture-Ubuntu/DomeCorres/build/DomeCorres $path
+ 
+ 
 # #SfM with all the merged matchngs
 # visSfm/VisualSFM.exe sfm+import $path/full $path/full/result.nvm $path/full/FeatureMatches.txt
 # 
