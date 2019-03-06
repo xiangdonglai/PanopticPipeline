@@ -1,2 +1,3 @@
 *build/
 SiftGPU/
+*__pycache__/

@@ -4,12 +4,12 @@ cd domeCalibrator/DomeCalibScript/
 
 if [ "$#" -lt 1 ]; then
   echo "Usage: $0 (CalibFolderPath) {KinectCalibFilePath}";
-  echo "(CalibFolderPath) is the root folder containing scene image folders"
+  echo "(CalibFolderPath) is the root folder containing scene image folders, named the dates"
   
   echo "For example, let us assumes that you have a folder hiarachy as follows,"
-  echo "   D:/User/160111_calib/scene1"
-  echo "   D:/User/160111_calib/scene2"
-  echo "   D:/User/160111_calib/scene3"
+  echo "   D:/User/160111/scene1"
+  echo "   D:/User/160111/scene2"
+  echo "   D:/User/160111/scene3"
   echo "   Then, (CalibFolderPath) should be D:/User/160111_calib"
   echo "   Note that subfolder names in (CalibFolderPath) can be arbitrary"
   echo ""
@@ -23,6 +23,12 @@ nViewThresh=3 # points with visibility equal or larger than this number are used
 echo "CalibFolder: $path"
 echo "kinectCalibPath: $kinectCalibPath"
 echo "nViewThresh: $nViewThresh"
+
+date=$(basename $path)
+echo $date
+if ! [[ $date =~ ^[0-9]+$ ]] ; then
+   echo "error: CalibFolder not a date" >&2; exit 1
+fi
 
 # Goal: Camera calibration using multiple scenes (multiple visualSfM files)
 # Assume that all the scenes (captured by static cameras) are located in "path" folder
@@ -53,10 +59,12 @@ echo "nViewThresh: $nViewThresh"
 # 01_01 - 20_24 mean VGA cameras
 # 50_1 - 50_10 mean Kinect color cameras
 
-
 cnt=0;
 for n in $path/*
 do
+	if [[ $n == *"full" ]]; then
+		continue;
+	fi
 	cnt=`expr $cnt + 1`
 done
 
@@ -70,6 +78,9 @@ fi
 #Run Each Sfm
 for n in $path/*
 do
+if [[ $n == *"full" ]]; then
+	continue;
+fi
 echo $n
 if [ $cnt == 1	]
 then
@@ -83,25 +94,27 @@ else
 fi
 done
 
-# if [ $cnt == 1	]
-# then
-# 	echo ""
-# 	echo There is only one folder. 
-# 	echo "Just run bundle adjust on the folder" 
-# 	#Final Bundle Adjustment (added 1 at the end of the command to avoid duplication check)
-# 	DomeBundle/DomeBundle.exe  $finalFolder  $finalFolder/output $nViewThresh 1
-# 
-# 	#Compute mk2nvm.txt
-# 	myCalibPath=$finalFolder/output/calibFiles
-# 	mk2nvmPath=$finalFolder/output/mk2nvm.txt
-# 	matlab -nojvm -nodisplay -r "Compute_MK2NVM('$myCalibPath','$kinectCalibPath','$mk2nvmPath'); exit"
-# 	exit;
-# fi
- 
- 
+if [ $cnt == 1	]
+then
+	echo ""
+	echo There is only one folder. 
+	echo "Just run bundle adjust on the folder" 
+	#Final Bundle Adjustment (added 1 at the end of the command to avoid duplication check)
+	DomeBundle/DomeBundle.exe  $finalFolder  $finalFolder/output $nViewThresh 1
+
+	#Compute mk2nvm.txt
+	myCalibPath=$finalFolder/output/calibFiles
+	mk2nvmPath=$finalFolder/output/mk2nvm.txt
+	matlab -nojvm -nodisplay -r "Compute_MK2NVM('$myCalibPath','$kinectCalibPath','$mk2nvmPath'); exit"
+	exit;
+fi
+
 #copy jpg file for dummy
 for n in $path/*
 do
+	if [[ $n == *"full" ]]; then
+		continue;
+	fi
 echo copy $n to full
 `mkdir $path/full`
 	for img in $n/*.jpg
@@ -114,23 +127,28 @@ done
 #Merge Matchin Info
 echo ""
 echo "Merge Matchings"
-../../Social-Capture-Ubuntu/DomeCorres/build/DomeCorres $path
+if [ ! -f $path/full/FeatureMatches.txt ]
+then
+	../../Social-Capture-Ubuntu/DomeCorres/build/DomeCorres $path
+fi
  
- 
-# #SfM with all the merged matchngs
-# visSfm/VisualSFM.exe sfm+import $path/full $path/full/result.nvm $path/full/FeatureMatches.txt
-# 
-# #Final Bundle Adjustment
-# DomeBundle/DomeBundle.exe  $path/full  $path/full/output $nViewThresh
-# 
-# #Generate normalized calibration files
-# ./DomeCalib_norm_check.sh $path/full/output
-# 
-# #Generate json version for panoptic dataset
-# calibNormPath=$path/full/output_norm;
-# matlab -nojvm -nodisplay -r "ConvCalibTxtToJson('$calibNormPath'); exit"
-# 
-# #Compute mk2nvm.txt
-# myCalibPath=$path/full/output/calibFiles
-# mk2nvmPath=$path/full/output/mk2nvm.txt
-# matlab -nojvm -nodisplay -r "Compute_MK2NVM('$myCalibPath','$kinectCalibPath','$mk2nvmPath'); exit"
+#SfM with all the merged matchngs
+vsfm/bin/VisualSFM sfm+import $path/full $path/full/result.nvm $path/full/FeatureMatches.txt
+
+#Final Bundle Adjustment
+../../Social-Capture-Ubuntu/DomeBundle/build/DomeBundle $path/full $path/full/output $nViewThresh
+
+#Generate normalized calibration files
+../../DomeCalib_norm_check.sh $path/full/output
+
+#Generate json version for panoptic dataset
+calibNormPath=$path/full/output_norm;
+matlab -nojvm -nodisplay -r "addpath('../../jsonlab/');ConvCalibTxtToJson('$calibNormPath'); exit"
+
+#Compute mk2nvm.txt
+myCalibPath=$path/full/output/calibFiles
+mk2nvmPath=$path/full/output/mk2nvm.txt
+matlab -nojvm -nodisplay -r "Compute_MK2NVM('$myCalibPath','$kinectCalibPath','$mk2nvmPath'); exit"
+
+cp -R $path/full/output_norm /media/posefs1a/Calibration/${date}_calib_norm/
+mv $path /media/posefs1a/Calibration/${date}_calib_rawData

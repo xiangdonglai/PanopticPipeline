@@ -4,3 +4,6 @@
 [submodule "panopticstudio"]
 	path = panopticstudio
 	url = https://github.com/CMU-Perceptual-Computing-Lab/panopticstudio.git
+[submodule "jsonlab"]
+	path = jsonlab
+	url = https://github.com/fangq/jsonlab
