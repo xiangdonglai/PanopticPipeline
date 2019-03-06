@@ -29,8 +29,10 @@ if __name__ == '__main__':
         for seq_index in input_seq_index:
             cmd = ['bash', './script_calibImgExt.sh', input_seq_name,
                     input_nas_idx, output_date, calib_root_path, str(seq_index)]
-            subprocess.run(cmd)
+            subprocess.call(cmd)
 
         # call DomeCalib.sh
         cmd = ['bash', './DomeCalib.sh', calib_base_path]
-        subprocess.run(cmd)
+        subprocess.call(cmd)
+
+        assert os.path.isdir('/media/posefs1a/Calibration/{}_calib_norm'.format(output_date))
