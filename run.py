@@ -1,4 +1,6 @@
 from config import CONFIG
+from SEQ_INFO import parse_seq
+from reconstruction import run_reconstruction
 import subprocess
 import os
 
@@ -13,7 +15,7 @@ if __name__ == '__main__':
 
         input_nas_idx = CONFIG['input_nas_index']
         assert(type(input_nas_idx) == str)
-        
+
         input_seq_index = CONFIG['input_seq_index']
         assert(type(input_seq_index) == list)
 
@@ -24,11 +26,11 @@ if __name__ == '__main__':
         if not os.path.isdir(calib_base_path):
             os.mkdir(calib_base_path)
         assert os.path.isdir(calib_base_path)
-        
+
         # call script_calibImgExt.sh to extract images to calib_base_path
         for seq_index in input_seq_index:
             cmd = ['bash', './script_calibImgExt.sh', input_seq_name,
-                    input_nas_idx, output_date, calib_root_path, str(seq_index)]
+                   input_nas_idx, output_date, calib_root_path, str(seq_index)]
             subprocess.call(cmd)
 
         # call DomeCalib.sh
@@ -36,3 +38,13 @@ if __name__ == '__main__':
         subprocess.call(cmd)
 
         assert os.path.isdir('/media/posefs1a/Calibration/{}_calib_norm'.format(output_date))
+
+    # run reconstruction
+    # process the sequence information
+    seq_infos = parse_seq(CONFIG)
+
+    assert(CONFIG['2D_detector'] in (0,))
+
+    # launch reconstruction
+    for seq in seq_infos:
+        run_reconstruction(seq, CONFIG)

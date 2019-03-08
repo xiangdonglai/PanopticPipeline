@@ -1,3 +1,8 @@
+*.zip
 *build/
 SiftGPU/
+pba/
 *__pycache__/
+caffe_demo/build
+caffe_demo/.build_release/
+*.caffemodel
