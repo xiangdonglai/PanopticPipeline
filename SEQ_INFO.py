@@ -27,6 +27,10 @@ class SEQ_INFO:
         return self._calib
 
     @property
+    def calib_path(self):
+        return os.path.join('/media/posefs1a/Calibration', self._calib, 'calibFiles')
+
+    @property
     def start_idx(self):
         return self._start
 
