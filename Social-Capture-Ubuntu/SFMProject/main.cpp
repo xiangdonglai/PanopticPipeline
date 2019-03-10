@@ -57,5 +57,7 @@ int main(int argc, char** argv)
 		printf("## input: g_calibrationFolder: %s\n",g_calibrationFolder);
 		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
 		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
+
+		SkeletonGeneratorDlg::Script_NodePartProposalRecon_fromPoseMachine_coco19();
 	}
 }

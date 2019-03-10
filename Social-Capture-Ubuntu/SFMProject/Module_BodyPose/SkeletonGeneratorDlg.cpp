@@ -53,7 +53,7 @@ void Script_NodePartProposalRecon_fromPoseMachine_coco19()
 			continue;
 		Module_BodyPose::CBodyPoseRecon tempPoseManager;
 		tempPoseManager.ProbVolumeRecoe_nodePartProposals_fromPoseMachine_coco19(g_dataMainFolder,g_calibrationFolder,g_askedVGACamNum,frameIdx,false,false,true);
-		// tempPoseManager.ClearData();
+		tempPoseManager.ClearData();
 	}
 	// ((MainControlDlg*)GetParent())->ComputeSliderRange();
 	// g_sfm.InitDomeCamIntExtVHK(g_calibrationFolder,g_visData);

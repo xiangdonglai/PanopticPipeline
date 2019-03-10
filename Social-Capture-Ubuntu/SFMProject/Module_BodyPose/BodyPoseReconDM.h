@@ -14,6 +14,11 @@ public:
 	CBodyPoseRecon(void);
 	~CBodyPoseRecon(void);
 
+	void ClearData()
+	{
+		m_loadedKinectNum =0;
+		ClearDetectionHull();
+	}
 	void ClearDetectionHull()
 	{
 		for(int i=0;i<m_nodePropScoreVector.size();++i)
@@ -35,6 +40,7 @@ public:
 	// Node Proposal Generation
 	void ProbVolumeRecoe_nodePartProposals_fromPoseMachine_coco19(const char* dataMainFolder,const char* calibFolder,const int askedCamNum, const int frameIdx, bool bSaveCostMap, bool isHD=false, bool bCoco19=false);
 	void ConstructJointHierarchy(int jointNum);
+	void SaveNodePartProposals(const char* dataMainFolder,const int cameraNum,const int frameIdx,const CVisualHullManager* pDetectHull,const vector<STreeElement*>& skeletonHierarchy,int actualValidCamNum=-1,bool isHD=false);
 
 	int m_targetPoseReconUnitIdx;		//index for m_3DPSPoseMemVector
 	int m_targetdetectHullManIdx;		//index for m_nodePropScoreVector
@@ -61,6 +67,8 @@ public:
 	vector<PoseMachine2DJointEnum> m_map_SMCToPoseMachineIdx;
 	vector<OpenPose25JointEnum> m_map_devaToOpenPoseIdx;
 	vector<OpenPose25JointEnum> m_map_SMCToOpenPoseIdx;
+	vector<SMC_BodyJointEnum> m_map_PoseMachineToSMCIdx;
+	int m_skeletonHierarchy_nextHalfStart;
 
 	vector<cv::Point3f> m_boneColorVector;		//size is same as bone number
 private:

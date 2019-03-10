@@ -40,10 +40,16 @@ def run_reconstruction(seq_info, CONFIG):
     assert os.path.exists(done_pose_file)
 
     # run reconstruction
-
     # $EXE_ROOT/SFMProject_mpm_furthestSamp.exe skel_mpm_undist_19pts $seqRootNASWin $calibPath $startFrame $endFrame
     # echo "" > $seqRootNAS/done_pose_ideal_coco19.log
     calibPath = seq_info.calib_path
     cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_mpm_undist_19pts', seq_info.processed_path + '/body_mpm/', calibPath, str(seq_info.start_idx), str(seq_info.end_idx)]
     proc = subprocess.Popen(cmd)
     proc.wait()
+
+    calibPath = seq_info.calib_wo_distortion_path
+    cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_all_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
+           str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
+    proc = subprocess.Popen(cmd)
+    proc.wait()
+    assert proc.returncode == 0
