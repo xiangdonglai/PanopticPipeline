@@ -1,19 +1,29 @@
 #include "BodyPoseReconDM.h"
 #include <iostream>
 #include <fstream>
+#include <list>
 #include <opencv2/core/core.hpp>
 #include <cstdio>
 #include "Utility.h"
 #include "UtilityGPU.h"
+#include "PatchOptimization.h"
 
 static CClock g_clock;
 #define VOXEL_SIZE_CM 4
 #define POSEMACHINE_NODESCORE_THRESHOLD_AVG 0.05
+#define DATASCORE_RATIO 0
 
 using namespace std;
 using namespace cv;
+
+
+namespace Module_BodyPose
+{
+
+CBodyPoseRecon g_bodyPoseManager;
+
 //domeViews is required to load only the corresponding view's results
-bool Module_BodyPose::Load_Undist_PoseDetectMultipleCamResult_MultiPoseMachine_19jointFull(
+bool Load_Undist_PoseDetectMultipleCamResult_MultiPoseMachine_19jointFull(
 	const char* poseDetectFolder,const char* poseDetectSaveFolder,
 	const int currentFrame, CDomeImageManager& domeImMan,bool isHD)
 {
@@ -105,10 +115,6 @@ bool Module_BodyPose::Load_Undist_PoseDetectMultipleCamResult_MultiPoseMachine_1
 	fout.close();
 	return true;
 }
-
-
-namespace Module_BodyPose
-{
 
 CBodyPoseRecon::CBodyPoseRecon(void)
 {
@@ -1014,6 +1020,896 @@ void CBodyPoseRecon::SaveNodePartProposals(const char* dataMainFolder,const int 
 	fout.close();
 }
 
+
+void CBodyPoseRecon::LoadNodePartProposals(const char* fullPath,const int imgFrameIdx,bool bRevisualize,bool bLoadPartProposal)
+{
+	m_curImgFrameIdx =-100;
+	printf("BodyVolumeRecon::Loading from %s\n",fullPath);
+	ifstream fin(fullPath, ios::in | ios::binary);
+	if(fin)
+	{
+		CVisualHullManager* detectionHullManager =  new CVisualHullManager();
+		m_nodePropScoreVector.push_back(detectionHullManager);		//push a CVisualHullManager which is describing current frames prob volumes
+		detectionHullManager->m_imgFramdIdx =  imgFrameIdx; 
+
+		int jointNum;
+		//newly added version
+		int magicNum;
+		fin.read((char*)&magicNum,sizeof(int));
+		if(magicNum==-99 || magicNum==-98)
+		{
+			float version;
+			fin.read((char*)&version,sizeof(float));			//0.1
+
+			if(version>0.2)  //from 0.2
+			{
+				int actualValidCamNum;
+				fin.read((char*)&actualValidCamNum,sizeof(int));	//Num of cameras used to make this voting results. Maybe diff from g_askedCamNum
+			}
+
+			int dataInt;
+			fin.read((char*)&dataInt,sizeof(int));
+			jointNum = dataInt;
+			if(magicNum==-99)
+			{
+				g_partPropScoreMode = PART_TRAJ_SCORE_WEIGHTED;			//important to determine threshold
+				printf("## PartScoreMode: LoadNodePartProposals: Weighted version (div by 480)\n");	
+			}
+			else //-98
+				g_partPropScoreMode = PART_TRAJ_SCORE_WEIGHTED_DIV_CNT;			//important to determine threshold
+				printf("## PartScoreMode: LoadNodePartProposals: Weighted version (div by counter)\n");	
+		}
+		else
+		{
+			printf("## PartScoreMode: LoadNodePartProposals: Non-weighted version\n");
+			jointNum = magicNum;		//this is an old version (non-weighted part score)
+			g_partPropScoreMode = PART_TRAJ_SCORE_NON_WEIGHTED;
+		}
+		detectionHullManager->m_visualHullRecon.resize(jointNum); //contains each joint's visual hull recon
+
+		if(m_skeletonHierarchy.size()==0)
+			ConstructJointHierarchy(jointNum);
+
+		for(int v=0;v<jointNum;++v)
+		{
+			CVisualHull& tempVisualHull = detectionHullManager->m_visualHullRecon[v]; 
+			tempVisualHull.m_actualFrameIdx =imgFrameIdx;
+
+			float dataFloat[7];
+			fin.read((char*)dataFloat,sizeof(float)*7);	//fout << xMin << " " << xMax << " " <<yMin << " " <<yMax << " " <<zMin <<" " <<zMax << " " <<voxelSize << "\n";  //Voxel Size
+			tempVisualHull.SetParameters(dataFloat[0],dataFloat[1],dataFloat[2],dataFloat[3],dataFloat[4],dataFloat[5],dataFloat[6]);
+
+			int surfVoxNum; //tempVisualHull.m_surfaceVoxelOriginal.size();
+			fin.read((char*)&surfVoxNum,sizeof(int));
+			tempVisualHull.m_surfaceVoxelOriginal.resize(surfVoxNum);
+			for(int i=0;i<surfVoxNum;++i)
+			{
+				fin.read((char*)dataFloat,sizeof(float)*4);
+
+				tempVisualHull.m_surfaceVoxelOriginal[i].pos.x = dataFloat[0];
+				tempVisualHull.m_surfaceVoxelOriginal[i].pos.y = dataFloat[1];
+				tempVisualHull.m_surfaceVoxelOriginal[i].pos.z = dataFloat[2];
+
+				tempVisualHull.m_surfaceVoxelOriginal[i].prob = dataFloat[3];
+
+				fin.read((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].voxelIdx,sizeof(int));
+			}
+		}
+		//////////////////////////////////////////////////////////////////////////
+		/// Lode Edge Information
+ 		char magicCharacter;		//there exist edge information
+		fin.read(&magicCharacter,1);
+		if(magicCharacter!='e' || bLoadPartProposal==false)		//there exists valid edge information
+		{
+			fin.read((char*)&jointNum,sizeof(int));
+			printf("Done\n");
+			return;
+		}
+
+		fin.read((char*)&jointNum,sizeof(int));
+		if(jointNum!=m_skeletonHierarchy.size())
+		{
+			printfLog("## ERROR: joint number is not same as current setting (%d vs %d)",jointNum,m_skeletonHierarchy.size());
+			printf("Done\n");
+			return;
+		}
+
+		SEdgeCostVector* pEdgeCostUnit = new SEdgeCostVector();
+		m_edgeCostVector.push_back(pEdgeCostUnit);
+		pEdgeCostUnit->parent_connectivity_vis.resize(m_skeletonHierarchy.size());
+		for(int jointIdx=0;jointIdx<m_skeletonHierarchy.size();++jointIdx)	
+		{
+			int childNum=0,parentNum=0;
+			fin.read((char*)&childNum,sizeof(int));
+			fin.read((char*)&parentNum,sizeof(int));
+
+			if(childNum==0)
+				continue;
+			
+			pEdgeCostUnit->parent_connectivity_vis[jointIdx].resize(childNum);
+			for(int c=0;c<childNum;++c)
+				pEdgeCostUnit->parent_connectivity_vis[jointIdx][c].resize(parentNum);
+
+			int cnt=0;
+			fin.read((char*)&cnt,sizeof(int));	//number of saved value
+
+			int* cVector = new int[cnt];	//to save these at once to the disk
+			int* fVector = new int[cnt];
+			float* edgeVector = new float[cnt];
+			fin.read((char*)cVector,sizeof(int)*cnt);
+			fin.read((char*)fVector,sizeof(int)*cnt);
+			fin.read((char*)edgeVector,sizeof(float)*cnt);
+
+			for(int i=0;i<cnt;++i)
+			{
+				pEdgeCostUnit->parent_connectivity_vis[jointIdx][cVector[i]][fVector[i]]  =  edgeVector[i];
+				//printf("load-:: %f\n",edgeVector[i]);
+				//m_skeletonHierarchy[j]->childParent_partScore[cVector[i]][fVector[i]] = edgeVector[i];
+			}
+			delete[] cVector;
+			delete[] fVector;
+			delete[] edgeVector;
+		}
+		
+		//Save the loaded one to m_skeletonHierarchy, which is used for inference
+		//Todo: only use m_edgeCostVector to avoid copy. (Not the one in the  m_skeleton
+		for(int jointIdx=0;jointIdx<m_skeletonHierarchy.size();++jointIdx)	
+		{
+			m_skeletonHierarchy[jointIdx]->childParent_partScore = pEdgeCostUnit->parent_connectivity_vis[jointIdx];
+		}
+		fin.close();
+	}
+	else
+	{
+		printf("LoadProbVolumeReconResult:: Failed from %s\n\n",fullPath);
+	}
+	printf("Done\n");
+}
+
+void InferenceJoint15_OnePass_Multiple_DM(CVisualHullManager* pTempSceneProb,vector<STreeElement*>& m_skeletonHierarchy,SBody3DScene& newPoseReconMem)
+{
+	int prevNumPeople = newPoseReconMem.m_articBodyAtEachTime.size();
+	while(true)
+	{
+		std::cout << "PrevNumPeople: " << prevNumPeople << "---------------------\n" << std::endl;
+		InferenceJointCoco19_OnePass_singleSkeleton(pTempSceneProb,m_skeletonHierarchy,newPoseReconMem);		//This version can handle both 15, 19 joints
+
+		if(prevNumPeople == newPoseReconMem.m_articBodyAtEachTime.size())
+			break;
+		prevNumPeople = newPoseReconMem.m_articBodyAtEachTime.size();
+	}
+}
+
+//Only generate the best single skeleton
+//Made this to avoid double counting between multiple subjects
+void InferenceJointCoco19_OnePass_singleSkeleton(CVisualHullManager* pTempSceneProb,vector<STreeElement*>& m_skeletonHierarchy,SBody3DScene& newPoseReconMem)
+{
+	//double connectivity_score_thresh = 2.0/g_askedVGACamNum;			//non-weighted part cost
+	double connectivity_score_thresh;
+	double headThreshold =-1e5;
+	if(g_partPropScoreMode == PART_TRAJ_SCORE_WEIGHTED)
+		connectivity_score_thresh = 0.2/g_askedVGACamNum;		
+	else if(g_partPropScoreMode == PART_TRAJ_SCORE_WEIGHTED_DIV_CNT)
+	{
+		//Found this empirically
+		//480: 0.05
+		//10: 0.3
+		//connectivity_score_thresh = (0.3* (480-g_askedVGACamNum) + 0.05* (g_askedVGACamNum-10) ) / (480.0-10.0);		//linear interpolation
+		connectivity_score_thresh = (0.2* (480-g_askedVGACamNum) + 0.05* (g_askedVGACamNum-10) ) / (480.0-10.0);		//linear interpolation
+		headThreshold = connectivity_score_thresh;
+		//connectivity_score_thresh = 0.05;				//fixed and independent from number of cameras
+		//headThreshold = 0.05;
+	}
+	else
+		connectivity_score_thresh = 2.0/g_askedVGACamNum;		
+
+	//connectivity_score_thresh/=5.0;
+	printf("Inference: Param: connectivity_score_thresh: %f\n",connectivity_score_thresh);
+	if(pTempSceneProb->m_visualHullRecon.size()==0)
+	{
+		printf("There is no prob volume data here\n");
+		return;
+	}
+
+	int jointNum = pTempSceneProb->m_visualHullRecon.size();
+
+	if(m_skeletonHierarchy.size()==0)
+	{
+		printf("## ERROR: Construct Skeleton Hierarchy first\n");
+		return;
+	}
+
+	vector<SJointCandGroup> jointCandGroupVector;
+	jointCandGroupVector.resize(m_skeletonHierarchy.size());
+	std::cout << "m_skeletonHierarchy.size(): " << m_skeletonHierarchy.size() << std::endl;
+	//////////////////////////////////////////////////////////////////////////
+	/// Generate Nodes
+	for(int i=0;i<m_skeletonHierarchy.size();++i)
+	{
+		SJointCandGroup& jointCandGroup = jointCandGroupVector[i];
+		jointCandGroup.pAssociatedJoint=m_skeletonHierarchy[i];
+
+		//initialize infer node
+		vector< SurfVoxelUnit >& surfVoxVector = pTempSceneProb->m_visualHullRecon[i].m_surfaceVoxelOriginal;
+		jointCandGroup.nodeCandidates.reserve(surfVoxVector.size());
+		for(int s=0;s<surfVoxVector.size();++s)
+		{
+			if(surfVoxVector[s].label>=0)
+			{
+			//	printf("3DPS: skip this node. It is already take by skeleton %d\n",surfVoxVector[s].label);
+				continue;
+			}
+
+			InferNode* pTempNode = new InferNode;
+			pTempNode->pos = surfVoxVector[s].pos;
+			pTempNode->associatedJointIdx = i;
+			pTempNode->originalPropIdx = s;		//Bug fixed....
+			pTempNode->pTargetSurfVox = &surfVoxVector[s];
+			pTempNode->dataScore = surfVoxVector[s].prob;		
+			pTempNode->scoreSum =0;
+			pTempNode->dataScoreSum =0;
+			jointCandGroup.nodeCandidates.push_back(pTempNode);
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Generate Edges
+	for(int j=0;j<m_skeletonHierarchy.size();++j)
+	{
+		STreeElement* pChildTreeNode= m_skeletonHierarchy[j];
+		int childJointIdx = j;
+		for(int p=0;p<pChildTreeNode->parents.size();++p)
+		{
+			STreeElement* pParentTreeNode = pChildTreeNode->parents[p];
+			int parentJointIdx = pParentTreeNode->idxInTree;
+
+			SJointCandGroup& childJointCandGroup = jointCandGroupVector[childJointIdx ];
+			SJointCandGroup& parentJointCandGroup = jointCandGroupVector[parentJointIdx];
+
+			vector< SurfVoxelUnit >& childNodePropVector = pTempSceneProb->m_visualHullRecon[childJointIdx].m_surfaceVoxelOriginal;
+			vector< SurfVoxelUnit >& parentNodePropVector = pTempSceneProb->m_visualHullRecon[parentJointIdx].m_surfaceVoxelOriginal;
+
+			childJointCandGroup.parentCandGroupVector.push_back(&parentJointCandGroup);
+			parentJointCandGroup.childCandGroupVector.push_back(&childJointCandGroup);
+			
+			float expectedDist = pChildTreeNode->parent_jointLength[p];
+			
+			vector<InferEdge> dummy;
+			for(int cc=0;cc<childJointCandGroup.nodeCandidates.size();++cc)
+				childJointCandGroup.nodeCandidates[cc]->m_edgesToParent.push_back(dummy);
+
+			for(int pp=0;pp<parentJointCandGroup.nodeCandidates.size();++pp)
+				parentJointCandGroup.nodeCandidates[pp]->m_edgesToChild.push_back(dummy);
+
+			for(int cc=0;cc<childJointCandGroup.nodeCandidates.size();++cc)
+			{
+				for(int pp=0;pp<parentJointCandGroup.nodeCandidates.size();++pp)
+				{
+					InferEdge edge;
+					float tempDist = Distance(childJointCandGroup.nodeCandidates[cc]->pos,parentJointCandGroup.nodeCandidates[pp]->pos);
+					bool bReject =false; 
+
+					if(pChildTreeNode->jointName==Joint_bodyCenter )				//Tougher constraint, avoid to jump to the proximal next person
+					{
+						if(tempDist>expectedDist + cm2world(20))		//10cm, distError>0, if tempDist> expectedDist
+							bReject =true;
+					}
+					else
+					{
+						//if(tempDist>expectedDist + cm2world(10))		//20cm, distError>0, if tempDist> expectedDist
+							//bReject =true;
+					}
+
+					float distError = abs(expectedDist-tempDist) / expectedDist;		//0 ~
+					//float magicNumber =10;
+					//float springScore = exp(- magicNumber* distError*distError);			//penalty
+					float springScore = 1 - abs(expectedDist-tempDist) / expectedDist;			//penalty
+					springScore *= 0;//SPRING_RATIO;
+					//if(springScore<0)
+						//springScore = -1e3;		//infinite
+
+					//////////////////////////////////////////////////////////////////////////
+					/// Connectivity Score
+					float connectivityScore=0;
+					int childOriginalIdx = childJointCandGroup.nodeCandidates[cc]->originalPropIdx;	//Bug fixed....
+					int parentOriginalIdx = parentJointCandGroup.nodeCandidates[pp]->originalPropIdx;
+					if(pChildTreeNode->childParent_partScore.size()>0)
+						if(!(pChildTreeNode->jointName==JOINT_neck))// || pChildTreeNode->jointName==JOINT_lHip || pChildTreeNode->jointName==JOINT_rHip))
+						{
+							connectivityScore  = pChildTreeNode->childParent_partScore[childOriginalIdx][parentOriginalIdx];
+							/*if(connectivityScore<0.01)
+								continue;*/
+						}
+					//if(connectivityScore<0.2/g_askedVGACamNum)
+					//if(connectivityScore<2/g_askedVGACamNum)
+					double connectivity_score_thresh_temp = connectivity_score_thresh;
+					if(connectivityScore<connectivity_score_thresh_temp)
+						continue;
+
+					if(bReject)
+					{
+						continue;
+					}
+					else
+					{
+						//Compute Edge Score
+						edge.edgeScroe =springScore + connectivityScore;			//temporary, need to compute.
+						edge.debugSpringScore = springScore;
+						edge.debugConnectScore = connectivityScore;
+					}
+					//Add this edge to both nodes
+					edge.otherNode = parentJointCandGroup.nodeCandidates[pp];
+					childJointCandGroup.nodeCandidates[cc]->m_edgesToParent.back().push_back(edge);
+
+					edge.otherNode = childJointCandGroup.nodeCandidates[cc];
+					parentJointCandGroup.nodeCandidates[pp]->m_edgesToChild.back().push_back(edge);
+				}
+			}
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//Initialize: Find leaf of the tree hierarchy, and add active nodes
+	for(int j=0;j<jointCandGroupVector.size();++j)
+	{
+		if(jointCandGroupVector[j].childCandGroupVector.size()==0)
+		{
+			for(int i=0;i<jointCandGroupVector[j].nodeCandidates.size();++i)
+			{
+				jointCandGroupVector[j].nodeCandidates[i]->scoreSum = DATASCORE_RATIO*jointCandGroupVector[j].nodeCandidates[i]->dataScore;
+				jointCandGroupVector[j].nodeCandidates[i]->dataScoreSum = DATASCORE_RATIO*jointCandGroupVector[j].nodeCandidates[i]->dataScore;
+			}
+
+			//Send ready message to the parents (or neighbors)
+			for(int p=0;p<jointCandGroupVector[j].parentCandGroupVector.size();++p)
+			{
+				jointCandGroupVector[j].parentCandGroupVector[p]->groupsReadyToSendMessageToMe.push_back(&jointCandGroupVector[j]);
+			//	jointCandGroupVector[j].groupsISentReadyMessage.push_back(jointCandGroupVector[j].parentCandGroupVector[p]);
+				jointCandGroupVector[j].bDoneAllProcess = true;			//this is One-pass case
+			}
+		}
+	}
+
+	while(true)
+	{
+		vector<SJointCandGroup*> activeJoints;//contains currently active nodes. 
+
+		//Find active joint
+		//one-pass case: if groupsReadyToSendMessage.size() is same as childCandGroupVector, get messages and do process, and send ready message to the parents
+		//two-pass case: if groupsReadyToSendMessage.size() is same as (neighborNum-1), get messages and do process, and send ready message to the other reaming neighbor
+		//				 if groupsReadyToSendMessage.size() is same as (neighborNum), do above for all (neighborNum-1) combinations.
+		//				 if this number is same as (neighborNum), compute max marginal for current node. 
+		for(int j=0;j<jointCandGroupVector.size();++j)
+		{
+			if(jointCandGroupVector[j].bDoneAllProcess)
+				continue;
+
+			//one pass case
+			if(jointCandGroupVector[j].groupsReadyToSendMessageToMe.size() == jointCandGroupVector[j].childCandGroupVector.size())
+			{
+				activeJoints.push_back(&jointCandGroupVector[j]);
+			}
+		}
+
+		printf("## INFERENCE:: Active nodes Num %d\n",activeJoints.size());
+
+		if(activeJoints.size()==0)
+			break;
+
+		//In current implementation, get message from all children (already verified that all child are ready to send message to me, once it is activated)
+		for(int j=0;j<activeJoints.size();++j)
+		{
+			for(int a=0;a<activeJoints[j]->nodeCandidates.size();++a)
+			{
+				InferNode* parentNode = activeJoints[j]->nodeCandidates[a];
+
+				//printf("sizeChild %d\n",parentNode->m_edgesToChild.size());
+				//#pragma omp parallel for		
+				for(int c=0;c<parentNode->m_edgesToChild.size();++c)		//This loop is for multiple children
+				{
+					float maxScore=-1e10;			//score might be very small inverse number
+					float maxCorresSpringScore=-1;
+					float maxCorresConnectScore=-1;
+					//SurfVoxelUnit* pBestPrevSurfVox = NULL;
+					InferNode* pBestPrevInferNode = NULL; 
+
+					for(int cc=0;cc<parentNode->m_edgesToChild[c].size();++cc)
+					{
+						InferNode* childNode = parentNode->m_edgesToChild[c][cc].otherNode;
+
+						float tempScore = childNode->scoreSum + parentNode->m_edgesToChild[c][cc].edgeScroe; //I didn't add current data term yet. 
+						if(pBestPrevInferNode==NULL || maxScore< tempScore)
+						{
+							maxScore = tempScore;
+							pBestPrevInferNode = childNode;
+
+							//For debugging
+							maxCorresSpringScore =   childNode->springScoreSum+  parentNode->m_edgesToChild[c][cc].debugSpringScore;
+							maxCorresConnectScore =   childNode->connectivityScoreSum +parentNode->m_edgesToChild[c][cc].debugConnectScore;
+						}
+					}
+
+					//Set best path
+					if(pBestPrevInferNode!=NULL)
+					{
+						parentNode->pPrevInferNodeVect.push_back(pBestPrevInferNode);
+						parentNode->scoreSum += maxScore;
+						parentNode->springScoreSum += maxCorresSpringScore;
+						parentNode->connectivityScoreSum += maxCorresConnectScore;
+
+						if(c+1 == parentNode->m_edgesToChild.size())  //Bug fixed. It should be added once. At the end of the iteration
+						{
+							parentNode->scoreSum += DATASCORE_RATIO*parentNode->dataScore;		//Bug fixed. It should be "+=" for multiple children cases
+							parentNode->dataScoreSum += DATASCORE_RATIO*parentNode->dataScore;
+						}
+					}
+					else
+						parentNode->scoreSum =0;// += -1e3;		//- infinit
+				}
+			}	//end of for(int c=0;activeJoints[j]->nodeCandidates[c].size();++c)
+		} //end of for(int j=0;j<activeJoints.size();++j)
+
+		//One-pass case: Send ready messages to parents
+		for(int j=0;j<activeJoints.size();++j)
+		{
+			//actually there is only one parent
+			for(int p=0;p<activeJoints[j]->parentCandGroupVector.size();++p)
+			{
+				activeJoints[j]->parentCandGroupVector[p]->groupsReadyToSendMessageToMe.push_back(activeJoints[j]);
+//				activeJoints[j]->groupsISentReadyMessage.push_back(activeJoints[j]->parentCandGroupVector[p]);
+			}
+
+			//this is always true in the one-pass case
+			//if(activeJoints[j]->groupsISentReadyMessage.size() == activeJoints[j]->parentCandGroupVector.size())
+				activeJoints[j]->bDoneAllProcess = true;	
+		}
+	}
+	//////////////////////////////////////////////////////////////////////////
+	/// Save marginal(probSum) for visualization
+	for(int j=0;j<jointCandGroupVector.size();++j)
+	{
+		for(int n=0;n<jointCandGroupVector[j].nodeCandidates.size();++n)
+		{
+			jointCandGroupVector[j].nodeCandidates[n]->pTargetSurfVox->marginalProb = jointCandGroupVector[j].nodeCandidates[n]->scoreSum;
+		}
+	}
+
+	//Save inference results
+	newPoseReconMem.m_imgFramdIdx = pTempSceneProb->m_imgFramdIdx;
+
+	//////////////////////////////////////////////////////////////////////////
+	//Select Root node candidates based on NMS
+	vector<InferNode*>& rootNodeCandOriginal = jointCandGroupVector[0].nodeCandidates;
+	vector<InferNode*> rootNodeCand;
+	float bandwidth = cm2world(5);
+	vector<bool> isLocalMax;
+	isLocalMax.resize(rootNodeCandOriginal.size(),true);
+	#pragma omp parallel for
+	for(int i=0;i<rootNodeCandOriginal.size();++i)
+	{
+		for(int j=0;j<rootNodeCandOriginal.size();++j)
+		{
+			if(i==j)
+				continue;
+			float dist = Distance(rootNodeCandOriginal[i]->pos,rootNodeCandOriginal[j]->pos);
+			if(dist<bandwidth)
+			{
+				if(rootNodeCandOriginal[i]->scoreSum > rootNodeCandOriginal[j]->scoreSum  )
+					isLocalMax[j] = false;
+			}
+		}
+	}
+	for(int i=0;i<rootNodeCandOriginal.size();++i)
+	{
+		if(isLocalMax[i]==true)
+			rootNodeCand.push_back(rootNodeCandOriginal[i]);
+	}
+	printf("rootNodeCand: %d\n",rootNodeCand.size());
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Save all valid skeleton candidates
+	std::list<InferNode*> rootNodeCandList(rootNodeCand.begin(),rootNodeCand.end());
+	while(rootNodeCandList.size()>0)
+	{
+		printf("Number of candidate: %d\n",rootNodeCandList.size());
+		//////////////////////////////////////////////////////////////////////////
+		// Find Best One
+		InferNode* pBestNode=NULL;
+		float maxProb=-1e10;
+
+		list<InferNode*>::iterator iter = rootNodeCandList.begin();
+		list<InferNode*>::iterator bestIter;// = rootNodeCandList.end();
+		while(iter!=rootNodeCandList.end())
+		{
+			if(iter==rootNodeCandList.begin() ||  (*iter)->scoreSum > maxProb)
+			{
+				maxProb = (*iter)->scoreSum;
+				bestIter = iter;
+			}
+			iter++;
+		}
+		pBestNode = *bestIter;
+		rootNodeCandList.erase(bestIter);
+
+		//if(maxProb <-1 || pBestNode ==NULL)//maxProb==-1e10)
+		double bestDataCost = pBestNode->scoreSum-pBestNode->springScoreSum-pBestNode->connectivityScoreSum;
+		printf("bestDataCost  %f\n",bestDataCost);
+
+		if(pBestNode->dataScore<headThreshold)
+		{
+			printf("## 3DPS: rejected by headtop datascore threshold: %f\n",pBestNode->dataScore);
+			continue;
+		}
+		//////////////////////////////////////////////////////////////////////////
+		//Back tracking
+		double dataTermSum = 0;
+		vector<InferNode*> allRelatedInferNode; 
+		allRelatedInferNode.push_back(pBestNode);
+		dataTermSum += DATASCORE_RATIO*pBestNode->dataScore;			//debug
+
+		int iterCnt =0;
+		bool bValid = true;
+		int bodyPartCnt = 0;
+		int shoulderCnt = 0;
+		while(iterCnt<allRelatedInferNode.size())
+		{
+			InferNode* pTempInferNode= allRelatedInferNode[iterCnt];
+			 
+			//if(pTempInferNode==NULL || pTempInferNode->bTaken==true)
+			
+			if(pTempInferNode!=NULL && pTempInferNode->associatedJointIdx<=2)
+				bodyPartCnt++;
+			if(pTempInferNode!=NULL && (pTempInferNode->associatedJointIdx==3 || pTempInferNode->associatedJointIdx==9) )
+				shoulderCnt++;
+			for(int i=0;i<pTempInferNode->pPrevInferNodeVect.size();++i)
+			{
+				InferNode* pPrevInferNode = pTempInferNode->pPrevInferNodeVect[i];
+				if(pPrevInferNode->bTaken==true )		//reject if any torso parts are overlapped
+				{
+					if(pPrevInferNode->associatedJointIdx<=3)
+					{
+						bValid = false;
+						break;
+					}
+					else  //Then, just ignore this part
+						continue;
+				}
+
+				allRelatedInferNode.push_back(pPrevInferNode);			//I am sure no infinite loop by doing this. 
+				dataTermSum += DATASCORE_RATIO*pPrevInferNode->dataScore;			//debug
+			}
+			if(bValid==false)
+				break;
+
+			iterCnt++;
+		}
+		if(bodyPartCnt<3)		//reject if it doesn't have full body (head, neck, body)
+		{
+			printf("## 3DPS: rejected by body-head validity constraint: bodyPartCnt: %d\n",bodyPartCnt);
+			bValid=false;
+		}
+		if(iterCnt<=6 || shoulderCnt<2)
+			bValid=false;
+		if(bValid==false)
+		{
+			printf("Not a valid candidate\n");
+			continue;
+		}
+
+		printfLog("Best Prob %f (data: %f, spring: %f, connect: %f): validjointNum %d\n",maxProb,pBestNode->dataScoreSum,pBestNode->springScoreSum,pBestNode->connectivityScoreSum,allRelatedInferNode.size());
+
+		//////////////////////////////////////////////////////////////////////////
+		// Add Skeleton	
+		CBody3D newHuman;
+		newHuman.m_jointPosVect.resize(m_skeletonHierarchy.size());
+		newHuman.m_jointConfidenceVect.resize(m_skeletonHierarchy.size(),-1);
+		for(int i=0;i<allRelatedInferNode.size();++i)
+		{
+			int jointIdx = allRelatedInferNode[i]->associatedJointIdx;
+			newHuman.m_jointPosVect[jointIdx] = allRelatedInferNode[i]->pos;
+			//if(DATASCORE_RATIO>0)
+				newHuman.m_jointConfidenceVect[jointIdx] = allRelatedInferNode[i]->dataScore;
+			/*else
+				newHuman.m_jointConfidenceVect[jointIdx] = 0;*/
+			allRelatedInferNode[i]->bTaken = true;
+			allRelatedInferNode[i]->pTargetSurfVox->label = newPoseReconMem.m_articBodyAtEachTime.size();		//exclude this node. It is already taken.
+		}
+		//if(newHuman.m_jointPosVect.size() == m_skeletonHierarchy.size())
+		{
+			newPoseReconMem.m_articBodyAtEachTime.push_back(newHuman);
+		}
+
+		printf("Found a valid skeleton\n");
+		break;
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Deallocate memories
+
+	for(int i=0;i<jointCandGroupVector.size();++i)
+	{
+		for(int j=0;j<jointCandGroupVector[i].nodeCandidates.size();++j)
+			delete jointCandGroupVector[i].nodeCandidates[j];
+		jointCandGroupVector[i].nodeCandidates.clear();
+	}
+}
+
+//SBody3DScene contains the pose of all subjects at a time instance.
+//Version Log
+//ver 0.6: Added Joint Scores
+//ver 0.8: Added Outlier information
+void SaveBodyReconResult(const char* folderPath,const SBody3DScene& poseReconMem,const int frameIdx,bool isHD)
+{
+	//Save Face Reconstruction Result
+	//char folderPath[512];
+	//sprintf(folderPath,"%s/poseRecon_c%d",g_dataMainFolder,g_askedVGACamNum);
+	CreateFolder(folderPath);
+
+	char fullPath[512];
+	if(isHD==false)
+		sprintf(fullPath,"%s/body3DScene_%08d.txt",folderPath,frameIdx);//m_domeImageManager.m_currentFrame);
+	else
+		sprintf(fullPath,"%s/body3DScene_hd%08d.txt",folderPath,frameIdx);//m_domeImageManager.m_currentFrame);
+	if(frameIdx%500==0)
+		printf("Save to %s\n",fullPath);
+	ofstream fout(fullPath,std::ios_base::trunc);
+	//fout << "ver 0.6\n";		//0.6: added joint score compared to 0.6
+	fout << "ver 0.8\n";		//0.8: added joint outlier information
+	fout << poseReconMem.m_articBodyAtEachTime.size() <<" ";
+
+	if(poseReconMem.m_articBodyAtEachTime.size()==0)
+		fout <<"0\n";
+	else
+		fout << poseReconMem.m_articBodyAtEachTime.front().m_jointPosVect.size() << "\n";
+
+	for(unsigned int s=0;s<poseReconMem.m_articBodyAtEachTime.size();++s)
+	{
+		const CBody3D& skeleton = poseReconMem.m_articBodyAtEachTime[s];
+
+		for(int i=0;i<skeleton.m_jointPosVect.size();++i)
+		{
+			fout << skeleton.m_jointPosVect[i].x << " " << skeleton.m_jointPosVect[i].y << " " << skeleton.m_jointPosVect[i].z << " ";
+			
+			if(skeleton.m_jointConfidenceVect.size()>0)
+				fout << skeleton.m_jointConfidenceVect[i] <<" ";
+			else
+				fout << -1 <<" ";
+
+			if(skeleton.m_isOutlierJoint.size()==skeleton.m_jointPosVect.size())
+			{
+				if(skeleton.m_isOutlierJoint[i])
+					fout << 1 << " ";
+				else
+					fout << 0 << " ";
+			}
+			else
+					fout << 0 << " ";
+		}
+		fout <<"\n";
+	}
+	fout.close();
+}
+
+//SBody3DScene contains the pose of all subjects at a time instance.
+void SaveBodyReconResult_json(const char* folderPath,const SBody3DScene& poseReconMem,const int frameIdx,bool bNormCoord,bool bAnnotated)
+{
+	CreateFolder(folderPath);
+
+	char fullPath[512];
+	sprintf(fullPath,"%s/body3DScene_%08d.json",folderPath,frameIdx);//m_domeImageManager.m_currentFrame);
+	printf("Save to %s\n",fullPath);
+	ofstream fout(fullPath,std::ios_base::trunc);
+	fout << "{ \"version\": 0.7, \n";		//ver 0.6: added confidence. ver 0.7: added valid humanLabel
+	char buf[512];
+	if(g_fpsType == FPS_VGA_25)
+	{
+		sprintf(buf,"\"univTime\" :%0.3f,\n",g_syncMan.GetUnivTimeVGA(frameIdx) );
+		fout <<buf;
+		sprintf(buf,"\"fpsType\" :\"vga_25\",\n");
+		fout <<buf;
+		printf("%f vs %0.3f vs %s\n",g_syncMan.GetUnivTimeVGA(frameIdx),g_syncMan.GetUnivTimeVGA(frameIdx),buf);
+		//fout <<buf;
+		sprintf(buf,"\"vgaVideoTime\" :%0.3f,\n",g_syncMan.GetUnivTimeVGA(frameIdx)-g_syncMan.GetUnivTimeVGA(0));
+		fout <<buf;
+	}
+	else
+	{
+		sprintf(buf,"\"univTime\" :%0.3f,\n",g_syncMan.GetUnivTimeHD(frameIdx) );
+		fout <<buf;
+		sprintf(buf,"\"fpsType\" :\"hd_29_97\",\n");
+		fout <<buf;
+		printf("%f vs %0.3f vs %s\n",g_syncMan.GetUnivTimeHD(frameIdx),g_syncMan.GetUnivTimeHD(frameIdx),buf);
+		//fout <<buf;
+	}
+
+	fout << "\"bodies\" :\n";
+	fout << "[";
+	Mat_<double> R,t;
+	double scale;
+	if(bNormCoord)
+	{
+		CDomeImageManager fullDome;
+		fullDome.InitDomeCamOnlyByExtrinsic(g_calibrationFolder);
+		fullDome.CalcWorldScaleParameters();
+		fullDome.ComputeRtForNormCoord(R,t,scale);
+	}
+	bool isFirst=true;
+	for(unsigned int s=0;s<poseReconMem.m_articBodyAtEachTime.size();++s)
+	{
+		const CBody3D& skeleton = poseReconMem.m_articBodyAtEachTime[s];
+
+		if(skeleton.m_humanIdentLabel<0)
+			continue;		//false positive
+		if(isFirst)
+		{
+			fout <<"\n{ \"id\": "<<skeleton.m_humanIdentLabel	 <<",\n";
+			isFirst = false;
+		}
+		else
+			fout <<",\n{ \"id\": "<<skeleton.m_humanIdentLabel <<",\n";
+
+		//joints15
+		if(skeleton.m_jointPosVect.size()==19)
+			fout <<"\"joints19\": [";
+		else if(skeleton.m_jointPosVect.size() == 26)
+			fout << "\"joints26\": [";
+		else
+			fout <<"\"joints15\": [";
+		vector<Mat_<double>> normCoord;
+		if(bNormCoord)
+		{
+			normCoord.resize(skeleton.m_jointPosVect.size());
+			#pragma omp parallel for num_threads(8)	
+			for(int i=0;i<skeleton.m_jointPosVect.size();++i)
+			{
+				Mat_<double> x_world;
+				Point3fToMat(skeleton.m_jointPosVect[i],x_world);
+				x_world = (R*x_world +t)*scale;
+				normCoord[i] = x_world;
+			}
+		}
+		
+
+		for(int i=0;i<skeleton.m_jointPosVect.size();++i)
+		{
+			if(bNormCoord==false)
+				fout << skeleton.m_jointPosVect[i].x << ", " << skeleton.m_jointPosVect[i].y << ", " << skeleton.m_jointPosVect[i].z;
+			else
+			{
+				/*Mat_<double> x_world;
+				Point3fToMat(skeleton.m_jointPosVect[i],x_world);
+				x_world = R*x_world +t;*/
+				fout << normCoord[i](0,0) << ", " << normCoord[i](1,0) << ", " << normCoord[i](2,0);
+			}
+			
+			if(skeleton.m_jointConfidenceVect.size()>0)
+				fout << ", " << skeleton.m_jointConfidenceVect[i];
+			else
+				fout << ", " << 0.0;
+			if(i+1<skeleton.m_jointPosVect.size())
+				fout<<", ";
+		}
+		fout <<"]\n}";
+	}
+
+	fout <<"\n] }";
+	fout.close();
+}
+
+//SBody3DScene contains the pose of all subjects at a time instance.
+//Version Log
+//ver 0.6: Added Joint Scores
+//ver 0.8: Added Outlier information
+bool CBodyPoseRecon::LoadBodyReconResult(char* fullPath,int imgFrameIdx)
+{
+	//printf("BodyPoseRecon::Loading from %s\n",fullPath);
+	//Save Face Reconstruction Result
+	ifstream fin(fullPath, ios::in);
+
+	if(fin.is_open()==false)
+	{
+		printf("# Failed:: load from %s\n",fullPath);
+		return false;
+	}
+	
+	//printf("Load from %s\n",fullPath);
+
+	char dummy[512];
+	if(fin)
+	{
+		m_3DPSPoseMemVector.push_back(SBody3DScene());
+		SBody3DScene& newPoseReconMem = m_3DPSPoseMemVector.back();
+		newPoseReconMem.m_imgFramdIdx = imgFrameIdx;
+
+		float ver;
+		fin >> dummy >> ver; //version
+		if(ver<0.5)
+		{
+			printf("version mismatch\n");
+			m_3DPSPoseMemVector.pop_back();
+			return false;
+		}
+		int subjectNum;
+		int jointNum;
+		fin >>subjectNum >>jointNum;
+		if(jointNum>0 && jointNum!=m_skeletonHierarchy.size())
+		{
+			ClearSKeletonHierarchy();
+			ConstructJointHierarchy(jointNum);
+		}
+
+		//printf("Human Pose Num: %d, JointNum %d\n",subjectNum,jointNum);
+		newPoseReconMem.m_articBodyAtEachTime.reserve(subjectNum);
+		for(int i=0;i<subjectNum;++i)
+		{
+			newPoseReconMem.m_articBodyAtEachTime.push_back(CBody3D());
+			CBody3D& newSkeleton = newPoseReconMem.m_articBodyAtEachTime.back();
+			//if(ver>0.69) //0.7: human identity
+				//fin >> newSkeleton.m_humanIdentLabel;
+			newSkeleton.m_jointPosVect.reserve(jointNum);
+			newSkeleton.m_jointConfidenceVect.reserve(jointNum);
+			for(int j=0;j<jointNum;++j)
+			{
+				Point3f temp;
+				fin >>temp.x >> temp.y >> temp.z;
+				newSkeleton.m_jointPosVect.push_back(temp);
+
+				if(ver>0.55)		//ver 0.6.. added joint confidence
+				{
+					double confidence;
+					fin >> confidence;
+					newSkeleton.m_jointConfidenceVect.push_back(confidence);
+				}
+
+				if(ver>0.75)		//ver 0.8.. added (manually specified) outlier information
+				{
+					int bIsOulier;
+					fin >> bIsOulier;			//1 (manually specified), 0: valid, -1: automatically obtained non valid 
+					if(bIsOulier)				
+						newSkeleton.m_isOutlierJoint.push_back(true);
+					else
+						newSkeleton.m_isOutlierJoint.push_back(false);
+
+				}
+			}
+
+			float tempHeight = abs(newSkeleton.m_jointPosVect.front().y- newSkeleton.m_jointPosVect.back().y);
+
+			//Compute body normal
+			Point3d neckToRoot= newSkeleton.m_jointPosVect[SMC_BodyJoint_bodyCenter] - newSkeleton.m_jointPosVect[SMC_BodyJoint_neck];
+			Point3d rightToLeft = newSkeleton.m_jointPosVect[SMC_BodyJoint_lShoulder]  -newSkeleton.m_jointPosVect[SMC_BodyJoint_rShoulder];
+			Normalize(neckToRoot);
+			Normalize(rightToLeft);
+			Point3d normalDirect = neckToRoot.cross(rightToLeft);
+			Normalize(normalDirect);
+			Point3dToMat(normalDirect,newSkeleton.m_bodyNormal);
+
+			//Compute Rotation0Translation
+			Point3d yaxis = normalDirect.cross(rightToLeft);
+			Mat_<double> R = Mat_<double>::eye(3,3);
+			R(0,0) = rightToLeft.x;
+			R(1,0) = rightToLeft.y;
+			R(2,0) = rightToLeft.z;
+
+			R(0,1) = yaxis.x;
+			R(1,1) = yaxis.y;
+			R(2,1) = yaxis.z;
+
+			R(0,2) = normalDirect.x;
+			R(1,2) = normalDirect.y;
+			R(2,2) = normalDirect.z;
+			newSkeleton.m_ext_R = R.inv();
+
+			Mat pt;
+			Point3fToMat4by1(newSkeleton.m_jointPosVect[SMC_BodyJoint_neck],pt);
+			newSkeleton.m_ext_t  = -R*pt.rowRange(0,3);
+		}
+	}
+	fin.close();
+	GenerateHumanColors();
+	return true;
+}
+
 void CBodyPoseRecon::ConstructJointHierarchy(int jointNum)
 {
 	if(m_skeletonHierarchy.size()>0)
@@ -1736,5 +2632,799 @@ void CBodyPoseRecon::ConstructJointHierarchy(int jointNum)
 		}
 	}
 }
+
+//Valid only for poseDetectFolder
+void CBodyPoseRecon::Optimization3DPS_fromDetection_oneToOne_coco19(const char* dataMainFolder,const char* calibFolder,const int askedCamNum,bool isHD,bool bCoco19)//optimize poseReconMem.m_poseAtEachFrame
+{
+	int modelJointNum;
+	char poseDetectFolderName[512];
+	if(bCoco19)
+	{
+		modelJointNum= MODEL_JOINT_NUM_COCO_19;
+		sprintf(poseDetectFolderName,"coco19_poseDetect_pm");
+	}
+	else
+	{
+		modelJointNum= MODEL_JOINT_NUM_15;
+		sprintf(poseDetectFolderName,"poseDetect_pm");
+	}
+
+	printf("Start: Optimization3DPS_fromDetection\n");
+	//double gaussianBandwidth = 20;
+	double gaussianBandwidth = 10;
+	//if(isHD)
+	//gaussianBandwidth *=2;
+
+	//To compute working volume, we should load full dome
+	CDomeImageManager fullDome;
+	fullDome.InitDomeCamOnlyByExtrinsic(calibFolder);
+	fullDome.CalcWorldScaleParameters();
+	fullDome.DeleteMemory();
+
+	//Parameter setting
+	CDomeImageManager domeImageManager;
+	domeImageManager.SetCalibFolderPath(calibFolder);
+	if(isHD==false)
+		domeImageManager.InitDomeCamVgaHd(askedCamNum,false);
+	else
+		domeImageManager.InitDomeCamVgaHdKinect(0,CDomeImageManager::LOAD_SENSORS_HD);
+	//domeImageManager.SetFrameIdx(frameIdx);		//Don't need
+
+	vector<int> jointToDetectIdxMap;
+	//vector<int> smc2posemachineIdx;			//This is a bug. 
+	//smc2posemachineIdx.resize(MODEL_JOINT_NUM_COCO_19);
+	for(int i=0;i<m_skeletonHierarchy.size();++i)
+	{
+		jointToDetectIdxMap.push_back(m_map_devaToPoseMachineIdx[m_skeletonHierarchy[i]->jointName]);		//targetJointIdxVect[ourIdx]==DetectionFile's index. 
+	//	smc2posemachineIdx[jointToDetectIdxMap.back()] = i;   //This is a bug.
+	}
+
+	//For each time instance
+	for(int t=0;t<m_3DPSPoseMemVector.size();++t)
+	{
+		int frameIdx = m_3DPSPoseMemVector[t].m_imgFramdIdx;
+		vector<CBody3D>& bodySkeletonVect = m_3DPSPoseMemVector[t].m_articBodyAtEachTime;
+
+		printf("## Processing %d\n",frameIdx);
+
+		/// Load detected 2d pose. Outer vector is for each image, and inner vector is for each instance (person)
+		vector< vector<SPose2D> > detectedPoseVect;		
+		char poseDetectFolder[128];
+		if(isHD==false)
+			sprintf(poseDetectFolder,"%s/%s/vga_25",dataMainFolder,poseDetectFolderName);
+		else
+			sprintf(poseDetectFolder,"%s/%s/hd_30",dataMainFolder,poseDetectFolderName);
+		printf("Loading posedetection result.....\n");
+		vector<int> validCamIdxVect;
+		bool isLoadDetect =  Module_BodyPose::LoadPoseDetectMultipleCamResult_PoseMachine(poseDetectFolder,frameIdx,domeImageManager.m_domeViews,detectedPoseVect,validCamIdxVect,isHD);
+		if(isLoadDetect==false)
+		{
+			printf("## Error: Cannot load pose detection results. \n");
+			continue;
+		}
+		else
+			printf("## PoseDetect result has been successfully loaded \n");
+		if(detectedPoseVect.size() != domeImageManager.m_domeViews.size())
+		{
+			printf("## ERROR: Optimization3DPS_fromDetection:: detectedPoseVect.size() != domeImageManager.m_domeViews.size()\n");
+			return;
+		}
+
+		//Find 1-1 correspondence between 3D point and 2D point
+		vector< vector< vector< pair<int, float> > > > detectedPoseVect_corrsHuman;		//finding corresponding humna index for each detected 2d joint/
+		// each image/ each 2d skeleton / each joint(joint idx is our SMC index)
+		//<int,float> ==>(humanIdx, detectionScore)
+		detectedPoseVect_corrsHuman.resize(detectedPoseVect.size());
+		for(int i=0;i<detectedPoseVect_corrsHuman.size();++i)
+		{
+			detectedPoseVect_corrsHuman[i].resize(detectedPoseVect[i].size());		//initialize as -1
+			for(int h2d=0;h2d<detectedPoseVect_corrsHuman[i].size();++h2d)
+			{
+				detectedPoseVect_corrsHuman[i][h2d].resize(modelJointNum, make_pair(-1,-1.0f));
+			}
+		}
+		//For each human finding correspondence candidate and claim that they are mine if its value is larter 
+		for(int h=0;h<bodySkeletonVect.size();++h)
+		{
+			for(int j=0; j<bodySkeletonVect[h].m_jointPosVect.size();++j)
+			{
+				if(j==SMC_BodyJoint_bodyCenter)
+					continue;
+				if(bodySkeletonVect[h].m_jointConfidenceVect.size()>j && bodySkeletonVect[h].m_jointConfidenceVect[j]<0)
+					continue;;
+				//printf("Current confidence: %f\n",bodySkeletonVect[h].m_jointConfidenceVect[j]);
+
+				Point3d jointPt3d = bodySkeletonVect[h].m_jointPosVect[j];
+				int corresDetectIdx = jointToDetectIdxMap[j];			//find corresponding poseMachine joint idx
+				if(corresDetectIdx==PM_JOINT_Unknown)
+					continue;
+
+				for(int c=0;c<domeImageManager.m_domeViews.size();++c)
+				{
+					Point2d jointPt2d = domeImageManager.m_domeViews[c]->ProjectionPt(jointPt3d);
+					pair<int,int> imSize = domeImageManager.GetImageSize(c);
+					if(IsOutofBoundary(imSize.first,imSize.second,jointPt2d.x,jointPt2d.y))
+						continue;
+					double bestDist = 1e5;
+					double best3DNodeWeight;
+					int best2DPosIdx=-1;
+					for(int di=0;di<detectedPoseVect[c].size();++di)		//for each human detectedPoseVect[c][di]
+					{
+						double dist = Distance(jointPt2d, detectedPoseVect[c][di].bodyJoints[corresDetectIdx]);
+						if(dist<gaussianBandwidth && dist <bestDist)		//Threshold should consider gaussian variance. Also we can consider all joint to determine correspondence (if two people are close each other)
+						{
+							bestDist = dist;
+							best3DNodeWeight = bodySkeletonVect[h].m_jointConfidenceVect[j];
+							best2DPosIdx = di;
+						}
+					}
+					if(bestDist>1e4 || best2DPosIdx<0)
+						continue;
+
+					//Claim that this is mine
+					if(detectedPoseVect_corrsHuman[c][best2DPosIdx][j].first<0 || detectedPoseVect_corrsHuman[c][best2DPosIdx][j].second<best3DNodeWeight)
+						detectedPoseVect_corrsHuman[c][best2DPosIdx][j] = make_pair(h,best3DNodeWeight);
+				}
+			}
+		}
+
+		//Count the number of ownership
+		vector<CBody3D> bodySkeletonVect_refined;
+		bodySkeletonVect_refined.reserve(bodySkeletonVect.size());
+		vector<int> validHumanVector; 
+		for(int h=0;h<bodySkeletonVect.size();++h)
+		{
+			vector<int> ownershipNum(modelJointNum,0);
+			for(int j=0; j<bodySkeletonVect[h].m_jointPosVect.size();++j)
+			{
+				if(j==SMC_BodyJoint_bodyCenter)
+					continue;
+				//int posemachineJointIdx = smc2posemachineIdx[j];		//This is a bug. smc2posemachineIdx has garbages...
+				int posemachineJointIdx = jointToDetectIdxMap[j];
+				int cnt=0;
+				float aveDetectionScore=0;
+				for(int c=0;c<detectedPoseVect_corrsHuman.size();++c)
+				{
+					for(int h2d=0;h2d<detectedPoseVect_corrsHuman[c].size();++h2d)
+					{
+						if(detectedPoseVect_corrsHuman[c][h2d][j].first==h)
+						{
+							cnt++;
+							aveDetectionScore += detectedPoseVect[c][h2d].bodyJointScores[posemachineJointIdx];
+						}
+					}
+				}
+				if(cnt>0)
+					aveDetectionScore /= cnt;
+				printf("human %d: joint %d: cnt: %d, avg: %f\n",h,j,cnt,aveDetectionScore);
+				ownershipNum[j] = cnt;
+			}
+			if(ownershipNum[SMC_BodyJoint_headTop] <2 && ownershipNum[SMC_BodyJoint_neck] <2 )//|| ownershipNum[SMC_BodyJoint_neck]<2 )//|| ownershipNum[SMC_BodyJoint_lShoulder]<2 || ownershipNum[SMC_BodyJoint_rShoulder]<2)
+			{
+				printf("Rejected\n");
+				continue;
+			}
+			
+			printf("		Accepted\n");
+			bodySkeletonVect_refined.push_back(bodySkeletonVect[h]);
+		}
+		bodySkeletonVect = bodySkeletonVect_refined;		//save the filtered one
+		printf("Filtered human num: %d\n",bodySkeletonVect_refined.size());
+
+		//Optimization based on the corresponding 2D detection
+		#pragma omp parallel for
+		for(int h=0;h<bodySkeletonVect.size();++h)
+		{
+			for(int j=0; j<bodySkeletonVect[h].m_jointPosVect.size();++j)
+			{
+				if(j==SMC_BodyJoint_bodyCenter)
+					continue;
+				if(bodySkeletonVect[h].m_jointConfidenceVect.size()>j && bodySkeletonVect[h].m_jointConfidenceVect[j]<0)
+					continue;;
+				//printf("Current confidence: %f\n",bodySkeletonVect[h].m_jointConfidenceVect[j]);
+
+				Point3d jointPt3d = bodySkeletonVect[h].m_jointPosVect[j];
+				//int corresDetectIdx = jointToDetectIdxMap[j];
+				int corresDetectIdx = jointToDetectIdxMap[j];
+				if(corresDetectIdx==PM_JOINT_Unknown)
+					continue;
+
+				vector<Mat*> projecMatVect;
+				vector<Point2d> imagePtVect;
+				vector<double> weightVect;
+
+				for(int c=0;c<domeImageManager.m_domeViews.size();++c)
+				{
+					Point2d jointPt2d = domeImageManager.m_domeViews[c]->ProjectionPt(jointPt3d);
+					pair<int,int> imSize = domeImageManager.GetImageSize(c);
+					if(IsOutofBoundary(imSize.first,imSize.second,jointPt2d.x,jointPt2d.y))
+						continue;
+					double bestDist = 1e5;
+					Point2d bestPt2dCorres;
+					double bestWeight;
+					for(int di=0;di<detectedPoseVect[c].size();++di)		//for each human detectedPoseVect[c][di]
+					{
+						double dist = Distance(jointPt2d, detectedPoseVect[c][di].bodyJoints[corresDetectIdx]);
+						if(dist<gaussianBandwidth && dist <bestDist)		//Threshold should consider gaussian variance. Also we can consider all joint to determine correspondence (if two people are close each other)
+						{
+							bestDist = dist;
+							bestPt2dCorres = detectedPoseVect[c][di].bodyJoints[corresDetectIdx];
+							bestWeight = detectedPoseVect[c][di].bodyJointScores[corresDetectIdx];
+						}
+					}
+					if(bestDist>1e4)
+						continue;
+					projecMatVect.push_back(&domeImageManager.m_domeViews[c]->m_P);
+					weightVect.push_back(bestWeight);
+					imagePtVect.push_back(bestPt2dCorres);
+				}
+				if(projecMatVect.size()<3 )
+					continue;
+				Mat X;
+				Point3dToMat4by1(jointPt3d,X);
+				//double beforeError = CalcReprojectionError_weighted(projecMatVect,imagePtVect,weightVect,X);
+				double beforeError = CalcReprojectionError(projecMatVect,imagePtVect,X);
+				int iter = 5;
+				while((iter--) > 0)
+				{
+					//vector<unsigned int> inliers;
+					double changesqr = TriangulationOptimization(projecMatVect,imagePtVect,X);
+					//double changesqr = triangulateWithRANSAC(projecMatVect,imagePtVect,imagePtVect.size()*10,X,3,inliers);
+					//printf("iter %d: humanIdx %d, jointIdx %d, inlierNum %d\n",5-iter,h,j,inliers.size());
+					//double changesqr = TriangulationOptimizationWithWeight(projecMatVect,imagePtVect,X);
+					//double changesqr = TriangulationOptimizationWithWeight(projecMatVect,imagePtVect,weightVect,X);
+					//double afterError = CalcReprojectionError_weighted(projecMatVect,imagePtVect,weightVect,X);
+					double afterError = CalcReprojectionError(projecMatVect,imagePtVect,X);
+					double changeDiff = abs(afterError - beforeError);
+					//printf("changeDiff: %f\n",changeDiff);
+					if(changeDiff<0.05)
+					{
+						//printf("iterNum: %d: finalChangeDiff: %f, finalError: %f\n",10-iter,changeDiff,afterError);
+						break;
+					}
+					beforeError = afterError;
+				} 
+				bodySkeletonVect[h].m_jointPosVect[j] = MatToPoint3d(X);
+				//printf("ReprojectionErrorChange: %f\n",change);
+			}
+			if(bodySkeletonVect[h].m_jointConfidenceVect[SMC_BodyJoint_lHip] >=0 && bodySkeletonVect[h].m_jointConfidenceVect[SMC_BodyJoint_rHip] >=0)
+				bodySkeletonVect[h].m_jointPosVect[SMC_BodyJoint_bodyCenter] = 0.5 * ( bodySkeletonVect[h].m_jointPosVect[SMC_BodyJoint_lHip] + bodySkeletonVect[h].m_jointPosVect[SMC_BodyJoint_rHip] );
+		}
+	}
+}
+
+void CBodyPoseRecon::Save3DPSBodyReconResult_Json(char* saveFolderPath,bool bNormCoord,bool bAnnotated)
+{
+	//Follow the first color set
+	for(int t=0;t<m_3DPSPoseMemVector.size();++t)
+	{
+		SBody3DScene&  currentScene = m_3DPSPoseMemVector[t];
+		//SaveBodyReconResult_javaScript(saveFolderPath,currentScene,m_3DPSPoseMemVector[t].m_imgFramdIdx);
+		SaveBodyReconResult_json(saveFolderPath,currentScene,m_3DPSPoseMemVector[t].m_imgFramdIdx,bNormCoord,bAnnotated);
+	}
+}
+
+//Should be double precision
+//vector< vector<Point3d,double> >& relatedPts:: outer joint for each time (length should be same or longer than transformVector),
+//												inner joint for peak candidates (position, cost)
+float ComputJointTrajCostFunction(Point3f startPt,vector< vector<Mat_<double> > >& transformVector,vector< vector<pair<Point3d,double> > >& relatedPts, vector<float>& scoreForEachTime)
+{
+	double sigma = 30;
+
+	Mat_<double> startPtMat;
+	Point3fToMat4by1(startPt,startPtMat);
+	double errorSum=0;
+	for(int b=0;b<transformVector.size();++b)
+	{
+		if(b==0)
+			scoreForEachTime.reserve(transformVector[b].size());
+
+		for(int f=0;f<transformVector[b].size();++f)
+		{
+			Mat pt = transformVector[b][f]*startPtMat;
+			Point3d tempPt;
+			MatToPoint3d(pt,tempPt);
+		
+			//Compute current cost
+			if(relatedPts.size()<=f)
+				break;
+
+			double tempMaxScore =-1;
+			
+			for(int c=0;c<relatedPts[f].size();++c)
+			{
+				//Compute Gaussian score
+				double d = Distance(tempPt,relatedPts[f][c].first);
+				double score = relatedPts[f][c].second* exp(- d*d/(2*sigma*sigma));		//range 0 ~ relatedPts[f][c].second
+				if(tempMaxScore<score)
+					tempMaxScore = score;
+			}
+
+			if(tempMaxScore<0)
+				tempMaxScore =0;		//just uniform score
+
+			errorSum+=tempMaxScore;
+
+			if(b==0)
+				scoreForEachTime.push_back(tempMaxScore);
+		}
+	}
+	return errorSum ;
+}
+
+void CBodyPoseRecon::AssignHumanIdentityColorFor3DPSResult()
+{
+	if(m_3DPSPoseMemVector.size()==0)
+	{
+		printf("## ERROR: m_3DPSPoseMemVector.size()==0\n");
+		return;
+	}
+	m_skeletalTrajProposals.clear();
+	vector< vector<CBody3D*> > humanToCorresSkeleton;		//outer for each humna. need to remember corresponding skeletons, to do final renaming at the end
+	int missingThresh=50;			//2 sec
+
+	//Follow the first color set
+	for(int t=0;t<m_3DPSPoseMemVector.size();++t)
+	{
+		//Init
+		for(int c=0;c<m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size();++c)
+		{
+			m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_humanIdentLabel = -1;		//default
+		}
+		
+		//Given already generated association, find their members
+		//printf("m_skeletalTrajProposals.size() == %d\n",m_skeletalTrajProposals.size());
+
+		//For each candidate find the best human identity
+		//vector< pair<int,double> > correspondingHuman(m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size(),make_pair(-1,1e5));				//humanIdentity, distance
+		vector< pair<int,int> > correspondingHuman(m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size(),make_pair(-1,10000));				//humanIdentity, misingHistory
+		for(int f=0;f<m_skeletalTrajProposals.size();++f)
+		{
+			if(m_skeletalTrajProposals[f].m_bStillTracked==false)
+				continue;
+
+			Point3d prevPt = m_skeletalTrajProposals[f].m_finalHumanPose.back().m_jointPosVect[SMC_BodyJoint_neck];
+			int elementNum = m_skeletalTrajProposals[f].m_finalHumanPose.size();
+			int missingHistory = 0;			//check this to avoid the case where a skeleton deappear but mistakenly reassociated for the location after long time frames
+			for(int tt=elementNum-1;tt>=0;--tt)
+			{
+				if(m_skeletalTrajProposals[f].m_finalHumanPose[tt].m_bValid==true)
+					break;
+				missingHistory++;
+			}
+			vector<cv::Point3f> prevSkeleton = m_skeletalTrajProposals[f].m_finalHumanPose.back().m_jointPosVect;
+			double bestDist = 1e5;
+			int bestCandidateIdx =-1;
+
+			for(int c=0;c<m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size();++c)
+			{
+				if(m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_humanIdentLabel>=0)
+					continue;
+
+				double dist = Distance(prevPt,m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_jointPosVect[SMC_BodyJoint_neck]);
+				if(bestDist>dist && dist < cm2world(30) )
+				{
+					bestDist = dist;
+					bestCandidateIdx = c;
+				}
+			}
+			if(bestCandidateIdx>=0 && bestDist<cm2world(20))
+			{
+				/*if( correspondingHuman[bestCandidateIdx].first <0 ||  correspondingHuman[bestCandidateIdx].second >bestDist )
+					correspondingHuman[bestCandidateIdx] = make_pair(f,missingHistory);*/
+				if( correspondingHuman[bestCandidateIdx].first <0 ||  correspondingHuman[bestCandidateIdx].second >missingHistory )
+					correspondingHuman[bestCandidateIdx] = make_pair(f,missingHistory);
+			}
+		}
+
+		for(int f=0;f<m_skeletalTrajProposals.size();++f)
+		{
+			if(m_skeletalTrajProposals[f].m_bStillTracked==false)
+				continue;
+
+			Point3d prevPt = m_skeletalTrajProposals[f].m_finalHumanPose.back().m_jointPosVect[SMC_BodyJoint_neck];
+			vector<cv::Point3f> prevSkeleton = m_skeletalTrajProposals[f].m_finalHumanPose.back().m_jointPosVect;
+			//double bestDist = 1e5;
+			/*int bestCandidateIdx =-1;
+			for(int c=0;c<m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size();++c)
+			{
+				if(m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_humanIdentLabel>=0)
+					continue;
+
+				double dist = Distance(prevPt,m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_jointPosVect[SMC_BodyJoint_neck]);
+				if(bestDist>dist && dist < cm2world(30) )
+				{
+					bestDist = dist;
+					bestCandidateIdx = c;
+				}
+			}*/
+			int bestCandidateIdx = -1;
+			for(int c=0;c<correspondingHuman.size();++c)
+			{
+				if(correspondingHuman[c].first == f)
+				{
+					bestCandidateIdx = c;
+					break;
+				}
+			}
+			if(bestCandidateIdx>=0)// && bestDist<cm2world(20))
+			{
+				//printf("Found %d th (dist %f)\n",t,world2cm(bestDist));
+				m_skeletalTrajProposals[f].m_finalHumanPose.push_back(m_3DPSPoseMemVector[t].m_articBodyAtEachTime[bestCandidateIdx]);	//just cloning
+				m_skeletalTrajProposals[f].missingCnt =0;
+				m_3DPSPoseMemVector[t].m_articBodyAtEachTime[bestCandidateIdx].m_humanIdentLabel = f;
+
+				humanToCorresSkeleton[f].push_back(&m_3DPSPoseMemVector[t].m_articBodyAtEachTime[bestCandidateIdx]);		//remember for renaming
+			}
+			else
+			{
+				m_skeletalTrajProposals[f].missingCnt++;
+				if(m_skeletalTrajProposals[f].missingCnt>=missingThresh)		//Completely failed
+				{
+					m_skeletalTrajProposals[f].m_bStillTracked= false;
+					while(m_skeletalTrajProposals[f].m_finalHumanPose.size()>=0)
+					{
+						if(m_skeletalTrajProposals[f].m_finalHumanPose.back().m_bValid ==false)
+						{
+							m_skeletalTrajProposals[f].m_finalHumanPose.pop_back();
+							humanToCorresSkeleton[f].pop_back();
+						}
+						else
+							break;
+					}
+				}
+				else   //Failed to find corresponding human at this moment
+				{
+					m_skeletalTrajProposals[f].m_finalHumanPose.resize(m_skeletalTrajProposals[f].m_finalHumanPose.size()+1);
+					m_skeletalTrajProposals[f].m_finalHumanPose.back().m_bValid = false;
+					m_skeletalTrajProposals[f].m_finalHumanPose.back().m_jointPosVect = prevSkeleton;
+
+					humanToCorresSkeleton[f].push_back(NULL);
+				}
+			}
+		}
+
+		//For the non-selected members, generate new groups
+		//Init
+		for(int c=0;c<m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size();++c)
+		{
+			if(m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_humanIdentLabel <0)
+			{
+				m_skeletalTrajProposals.resize(m_skeletalTrajProposals.size()+1);
+				CBody4DSubject& newBodySubject = m_skeletalTrajProposals.back();
+				newBodySubject.m_initFrameIdx = m_3DPSPoseMemVector[t].m_imgFramdIdx;
+				newBodySubject.m_finalHumanPose.push_back(m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c]);		//copy from body3D (points, confidence...etc)
+
+				int idx = (m_skeletalTrajProposals.size()-1)%m_colorSet.size();//original
+				/*int idx=0;		//for 2 people's case
+				if(m_skeletalTrajProposals.size()>=2)
+					idx =1;*/
+				newBodySubject.SetBodyColor(m_colorSet[idx]);
+				newBodySubject.missingCnt =0;
+				newBodySubject.m_bStillTracked = true;
+
+				m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_humanIdentLabel = m_skeletalTrajProposals.size()-1;
+				
+				humanToCorresSkeleton.resize(humanToCorresSkeleton.size()+1);
+				humanToCorresSkeleton.back().push_back(&m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c]);		//remember for renaming
+			}
+		}
+	}
+
+	//Eliminate Too short one
+	int validThresh = 100;
+/*	int maxLength =0;
+	for(int i=0;i<m_skeletalTrajProposals.size();++i)
+		maxLength = max(maxLength,(int)m_skeletalTrajProposals[i].m_finalHumanPose.size());
+	if(maxLength<=100)		*/
+
+	if(g_poseEstLoadingDataNum<=150)
+		validThresh=0;
+
+	printf("## Valid Skeletal Traj Proposal Range Threshold: %d\n",validThresh);
+	vector< CBody4DSubject> inliers;
+	vector < vector<CBody3D*>> inliers_corresSkel;
+	for(int i=0;i<m_skeletalTrajProposals.size();++i)
+	{
+		//count valid element
+
+		int validCnt=0;
+		for(int t=0;t < m_skeletalTrajProposals[i].m_finalHumanPose.size();++t)
+		{
+			if(m_skeletalTrajProposals[i].m_finalHumanPose[t].m_bValid)
+				validCnt++;
+		}
+		//if(m_skeletalTrajProposals[i].m_finalHumanPose.size()>validThresh)
+		if(validCnt>validThresh)
+		{
+			//printf("Check: %d vs %d\n",m_skeletalTrajProposals[i].m_finalHumanPose.size(),humanToCorresSkeleton[i].size());
+			printf("## ValidSkeleton: Id %d, validCnt: %d\n",inliers_corresSkel.size(),validCnt);
+			inliers.push_back(m_skeletalTrajProposals[i]);
+			inliers_corresSkel.push_back(humanToCorresSkeleton[i]);
+		}
+	}
+	m_skeletalTrajProposals = inliers;
+
+	//Rename human identity labels
+	for(int t=0;t<m_3DPSPoseMemVector.size();++t)
+	{
+		for(int c=0;c<m_3DPSPoseMemVector[t].m_articBodyAtEachTime.size();++c)
+			m_3DPSPoseMemVector[t].m_articBodyAtEachTime[c].m_humanIdentLabel = -1;		//default
+	}
+	for(int h=0;h<inliers_corresSkel.size();++h)
+	{
+		for(int t=0;t<inliers_corresSkel[h].size();++t)
+		{
+			if(inliers_corresSkel[h][t]==NULL)
+				continue;
+			inliers_corresSkel[h][t]->m_humanIdentLabel = h;
+		}
+	}
+
+	for(int i=0;i<m_skeletalTrajProposals.size();++i)
+	{
+		for(int t=0;t < m_skeletalTrajProposals[i].m_finalHumanPose.size();++t)
+		{
+			m_skeletalTrajProposals[i].m_finalHumanPose[t].m_humanIdentLabel = i;
+		}
+	}
+
+	//special color assignement
+	for(int i=0;i<m_skeletalTrajProposals.size();++i)
+	{
+		Point3f color = m_skeletalTrajProposals[i].GetBodyColor();
+		m_skeletalTrajProposals[i].SetBodyColor(color);
+	}
+	
+}
+
+bool CPartTrajProposal::BoneToTrajMinMaxDist_considerNormal(TrajElement3D* refTraj,double& minDist,double& maxDist, double& worstNormalInnerProd
+										 ,double childNodeSideOffset_cm, double parentNodeSideOffset_cm)
+{
+	float partBoneLength = GetBoneLength();
+	float minAlongBoneDistThresh = -cm2world(childNodeSideOffset_cm);
+	float maxAlongBoneDistThresh = partBoneLength +cm2world(parentNodeSideOffset_cm);
+
+	maxDist = 0;
+	minDist = 1e5;
+	int compareStartFrameIdx = max(m_startImgFrameIdx,refTraj->GetTrajStartTimeInFrameIdx());
+	int compareLastFrameIdx = min(m_startImgFrameIdx+(int)m_articBodyAtEachTime.size()-1,refTraj->GetTrajLastTimeInFrameIdx());
+	//if(compareLastFrameIdx-compareStartFrameIdx<10)
+	if(compareLastFrameIdx-compareStartFrameIdx<5)
+		return false;
+
+	bool bOnceInTheBoundary = false;
+	worstNormalInnerProd=1e5;
+	for(int f=compareStartFrameIdx;f<=compareLastFrameIdx;++f)
+	{
+		cv::Point3d tempTrajPt;
+		cv::Point3d tempTrajNormal;
+		bool bSuccess = refTraj->GetTrajPosNormal_BySelectedFrameIdx(f,tempTrajPt,tempTrajNormal);
+		if(bSuccess==false)
+			break;
+
+		int t = f-m_startImgFrameIdx;
+		if(m_articBodyAtEachTime[t].m_bValid==false)		//ignore outliers
+			continue;
+
+		assert(m_articBodyAtEachTime[t].m_jointPosVect.size()==2);
+		cv::Point3f& childJointdPos = m_articBodyAtEachTime[t].m_jointPosVect[0];
+		cv::Point3f& parentJointdPos = m_articBodyAtEachTime[t].m_jointPosVect[1];
+		cv::Point3f boneDirectionalVect = parentJointdPos- childJointdPos;
+		Normalize(boneDirectionalVect);
+
+		//////////////////////////////////////////////////////////////////////////
+		//Compute orthogonal dist
+		cv::Point3f childToPt = cv::Point3f(tempTrajPt.x,tempTrajPt.y,tempTrajPt.z) - childJointdPos;
+
+		float distAlongBoneDirection = childToPt.dot(boneDirectionalVect);
+
+		//added
+		if(distAlongBoneDirection> minAlongBoneDistThresh && distAlongBoneDirection  < maxAlongBoneDistThresh)
+			bOnceInTheBoundary = true;		//at least once
+
+		cv::Point3f orthoVect = childToPt- boneDirectionalVect*distAlongBoneDirection;
+		double orthoDist = norm(orthoVect);
+
+		//Compare normals
+		double normalCompare = orthoVect.dot(tempTrajNormal);
+		if(worstNormalInnerProd>normalCompare)
+			worstNormalInnerProd = normalCompare;
+		if( normalCompare<-0.2)
+			return false;
+
+		maxDist = max(maxDist,orthoDist);
+		minDist = min(minDist,orthoDist);
+	}
+
+	if(bOnceInTheBoundary==false)
+		return false;
+	return true;
+}
+
+//Input::
+//Start time
+//originalTrajVect: to find related peaks among all peaks
+//Transformation vectors (from startPt for each joints)
+//Related peak points for each frame. 
+//thresh is used to filter out meangless peaks
+//Return score
+double CPartTrajProposal::NodeTrajectoryOptimization(int jointIdx,int startTime,vector<Point3f>& originalTrajVect,vector< vector<Mat_<double> > >& transformVector,vector<CVisualHullManager*>& detectionHullVector,double thresh,vector<Point3f>& optimizedTraj,bool NoOptimization)
+{
+	if(detectionHullVector.size()==0)
+	{
+		printf("No Detection Hull result\n");
+		return -1e3;
+	}
+
+	//Select related pt only using a bandwidth
+	/*double bandwidth = 10/WORLD_TO_CM_RATIO;
+	if(jointIdx==SMC_BodyJoint_bodyCenter)
+		bandwidth = 20/WORLD_TO_CM_RATIO;
+	if(jointIdx==SMC_BodyJoint_lShoulder)
+		bandwidth = 5/WORLD_TO_CM_RATIO;*/
+
+	double bandwidth = 20/WORLD_TO_CM_RATIO;
+	if(jointIdx==SMC_BodyJoint_bodyCenter)
+		bandwidth = 25/WORLD_TO_CM_RATIO;
+	if(jointIdx==SMC_BodyJoint_lShoulder)
+		bandwidth = 15/WORLD_TO_CM_RATIO;
+
+	/*if(jointIdx==8)
+		bandwidth = 20/WORLD_TO_CM_RATIO;*/
+	int detectionHullStartIdx = startTime - detectionHullVector.front()->m_imgFramdIdx;
+	int trackLength =0;
+
+	for(int i=0;i<transformVector.size();++i)
+	{
+		if(trackLength <transformVector[i].size())
+			trackLength  = transformVector[i].size();
+	}
+
+	if(detectionHullVector.size()<detectionHullStartIdx +trackLength)
+	{
+		trackLength = detectionHullVector.size()- detectionHullStartIdx;
+			//printf("Detection Hull is shorter than required %d vs %d\n",m_nodePropScoreVector.size(), detectionHullStartIdx +trackLength);
+			//return 1e3;
+	}
+
+	vector< vector<pair<Point3d,double> > > relatedPts;
+	relatedPts.resize(trackLength);
+	for(int i=0;i<trackLength;++i)
+	{
+		int dhIdx = detectionHullStartIdx +i;
+		Point3f targetJointPos = originalTrajVect[i];
+		CVisualHull& jointPeaks =detectionHullVector[dhIdx]->m_visualHullRecon[jointIdx];
+		/*
+		for(int k=0;k<jointPeaks.m_surfaceVoxelOriginal.size();k++)
+		{
+			if(jointPeaks.m_surfaceVoxelOriginal[k].prob <thresh)
+				continue;
+			if(Distance(targetJointPos,jointPeaks.m_surfaceVoxelOriginal[k].pos) <bandwidth)
+			{
+				Point3d pos_d;
+				Point3fTo3d( jointPeaks.m_surfaceVoxelOriginal[k].pos,pos_d);
+				relatedPts[i].push_back( make_pair(pos_d,jointPeaks.m_surfaceVoxelOriginal[k].prob));
+			}
+		}*/
+
+		//Select best one
+		float bestScore =-1e5;
+		Point3d bestPos;
+		for(int k=0;k<jointPeaks.m_surfaceVoxelOriginal.size();k++)
+		{
+			
+			if(Distance(targetJointPos,jointPeaks.m_surfaceVoxelOriginal[k].pos) <bandwidth)
+			{
+				if(jointPeaks.m_surfaceVoxelOriginal[k].prob > bestScore)
+				{
+					Point3d pos_d;
+					Point3fTo3d( jointPeaks.m_surfaceVoxelOriginal[k].pos,pos_d);
+					bestPos = pos_d;
+					bestScore = jointPeaks.m_surfaceVoxelOriginal[k].prob;
+				}
+			}
+		} 
+		if(bestScore>0)
+			relatedPts[i].push_back( make_pair(bestPos,bestScore));
+	}
+
+	Point3f startPt= originalTrajVect.front();
+	m_boneGroupScoreForEachTime.clear();
+	float score = ComputJointTrajCostFunction(startPt,transformVector,relatedPts,m_boneGroupScoreForEachTime);
+
+	printf("Joint%d: current Score %f ->",jointIdx,score);
+	if(NoOptimization)
+	{
+		printf("\n");
+		return score;
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Joint optimization
+	Point3f optimizedTrajStartPt;
+	PoseReconNodeTrajOptimization_ceres(startPt,transformVector,relatedPts,optimizedTrajStartPt);
+	m_boneGroupScoreForEachTime.clear();
+	score =ComputJointTrajCostFunction(optimizedTrajStartPt,transformVector,relatedPts,m_boneGroupScoreForEachTime);
+	printf("afterOptimization -> %f\n",score);
+
+	//Transform
+	Mat startPtMat;
+	Point3fToMat4by1(optimizedTrajStartPt,startPtMat);
+	optimizedTraj.push_back(optimizedTrajStartPt);
+	for(int i=1;i<transformVector[0].size();++i)
+	{
+		Mat pt = transformVector[0][i]*startPtMat;
+		optimizedTraj.push_back(MatToPoint3f(pt));
+		//cout<<transformVector[0][f-jointStartFrameIdx]<<endl;
+	}
+	return score ;
+}
+
+void CPartTrajProposal::ComputeBoneTraj(vector<CVisualHullManager*>& detectionHullVector,float threshold)
+{
+	vector< vector<Mat_<double> > > transformVector;		//outer for T from each bone, inner for each frame	.. because there exist multiple transforms from different bones
+	transformVector.push_back(m_forwardTransformVect);
+
+	if(m_articBodyAtEachTime.size()==0)
+		return;
+
+	int boneEndPtNum = m_jointIdxVect.size();
+	double boneGroupScore =0;
+	for(int b=0;b<boneEndPtNum;++b)
+	{
+		vector<Point3f> trajVect;			//generated by just averaging.
+		trajVect.reserve(m_articBodyAtEachTime.size());
+		for(int t=0;t<m_articBodyAtEachTime.size();++t)
+			trajVect.push_back(m_articBodyAtEachTime[t].m_jointPosVect[b]);
+
+		vector<Point3f> optimizedTrajVect;			//final transform is done by transformVector[0] with optimized start pt
+		double score = NodeTrajectoryOptimization(m_jointIdxVect[b],m_startImgFrameIdx,trajVect,transformVector,detectionHullVector,threshold,optimizedTrajVect,true);		//transformVector start from jointStartFrameIdx
+		boneGroupScore +=score;
+	}
+	m_boneGroupScore = boneGroupScore/boneEndPtNum;
+}
+
+bool CPartTrajProposal::GetBoneDirection(int frameIdx,Point3f& directVect)
+{
+	int idx = frameIdx - m_startImgFrameIdx;
+	if(idx<0 || idx >= m_articBodyAtEachTime.size())
+		return false;
+
+	Point3f direct = m_articBodyAtEachTime[idx].m_jointPosVect[0] - m_articBodyAtEachTime[idx].m_jointPosVect[1];
+	Normalize(direct);
+	directVect = direct;
+	
+	return true;
+}
+
+void CPartTrajProposal::OptimizeBoneTraj(vector<CVisualHullManager*>& detectionHullVector,float threshold)
+{
+	vector< vector<Mat_<double> > > transformVector;		//outer for T from each bone, inner for each frame	.. because there exist multiple transforms from different bones
+	transformVector.push_back(m_forwardTransformVect);
+
+	if(m_articBodyAtEachTime.size()==0)
+		return;
+
+	int boneEndPtNum = m_jointIdxVect.size();
+	double boneGroupScore =0;
+	for(int b=0;b<boneEndPtNum;++b)
+	{
+		vector<Point3f> trajVect;			//generated by just averaging.
+		trajVect.reserve(m_articBodyAtEachTime.size());
+		for(int t=0;t<m_articBodyAtEachTime.size();++t)
+			trajVect.push_back(m_articBodyAtEachTime[t].m_jointPosVect[b]);
+
+		vector<Point3f> optimizedTrajVect;			//final transform is done by transformVector[0] with optimized start pt
+		double score = NodeTrajectoryOptimization(m_jointIdxVect[b],m_startImgFrameIdx,trajVect,transformVector,detectionHullVector,threshold,optimizedTrajVect,false);		//transformVector start from jointStartFrameIdx
+		boneGroupScore +=score;
+
+		for(int t=0;t<m_articBodyAtEachTime.size();++t)
+			m_articBodyAtEachTime[t].m_jointPosVect[b] = optimizedTrajVect[t];
+	}
+
+	m_boneGroupScore = boneGroupScore/boneEndPtNum;
+}
+
 
 }

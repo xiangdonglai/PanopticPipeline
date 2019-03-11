@@ -2,6 +2,8 @@
 
 #include <vector>
 #include <opencv2/core/core.hpp>
+#include "DataStructures.h"
+#include "TrajElement3D.h"
 
 namespace Module_BodyPose
 {
@@ -179,7 +181,6 @@ public:
 	{
 		jointName=j;
 		bInferActiveJoint =false;
-		// inferedData = NULL;
 
 		levelToRootInHiearchy=0;
 		mirrorJointIdx =-1;
@@ -203,24 +204,176 @@ public:
 	// 	return BodyJointEnum_str[jointName];
 	// }
 
-	// void ClearInferData()
-	// {
-	// 	for(int i=0;i<inferedDataCands.size();++i)
-	// 		delete inferedDataCands[i];
-	// 	inferedDataCands.clear();
-
-	// 	if(inferedData!=NULL)
-	// 	{
-	// 		delete inferedData;
-	// 		inferedData =NULL;
-	// 	}
-	// }
-
-	// SJointCandGroup_old* inferedData;		//finally generated result by message passing from the leaf-side
-	// vector<SJointCandGroup_old*> inferedDataCands;		//Candidate from all children. Made this to consider multiple children nodes case
-
 	bool bInferActiveJoint;
 	int levelToRootInHiearchy;		//to adjust skeleton display level;
+};
+
+class CBody3D
+{
+public:
+	CBody3D()
+	{
+		bDraw  =true;
+		skeletonColor =g_blue_p3f;
+		m_humanIdentLabel = -1;
+
+		m_bValid = true;
+	}
+
+	int m_humanIdentLabel;
+	std::vector<PickedPtInfo> m_selectedPtsForCurrentJoint;			//used for interpolation
+	std::vector<cv::Point3f> m_jointPosVect;			//joint position for the currently selected time instance. Rendering is referring only this data structure
+	std::vector<bool>	m_isOutlierJoint;		//same size as m_jointPosVect==15. m_isOutlierJoint.size() == 0 in general.
+	std::vector<double>	m_jointConfidenceVect;		//after inference. Save node proposal's score. -1 if not valid
+	std::vector<SJointTraj> 	m_jointTrajVect;	//corresponding trajectories for each joint (used for manual selection)
+	std::vector<cv::Point3f> m_boneDirectinalVector;		//Each element is a vector from child to parent joint. size is same as m_jointPosVect. Root has zero vector. 
+	std::vector<float> m_boneLengthVector;		//Each element is a length from child to parent joint. size is same as m_jointPosVect. Root has zero vector. 
+	cv::Point3f skeletonColor;		//to be visualized
+	cv::Point3f skeletonColorBackupForPicking;
+
+	////////////////////////////////////
+	//Computed from Trajectory Stream
+	std::vector<cv::Mat_<double> > m_partTrans_next;		//transformation for t->t+1.. m_partTrans_next[childIdx] means trans. for the parent-child limb. size() is same as joint hierarchy. m_limbTrans_next[0] means nothing. 
+	std::vector<cv::Mat_<double> > m_partTrans_prev;		//transformation for t->t-1
+
+	//Debugging tools
+	std::vector< TrajElement3D* > m_relatedTraj;			//related trajectories. pair<postiton,color>. Currently only used for display
+	std::vector< pair<cv::Point3f,cv::Point3f>  > m_relatedPointCloud;			//related trajectories. pair<postiton,color>. Currently only used for display
+
+	cv::Mat m_bodyNormal;		//Used to check body orientation
+	//Transform from world to Human-centric coord
+	//ptMat_world = curRefHuman.m_ext_R * ptMat + curRefHuman.m_ext_t;
+	cv::Mat m_ext_R;
+	cv::Mat m_ext_R_inv;
+	cv::Mat m_ext_t;
+
+	bool m_bValid;  //used to denote blank(missing) element in the association process
+
+	bool bDraw;
+	bool isBlank()
+	{
+		if(m_jointPosVect.size()==0) 
+			return true;
+		else
+			return false;
+	}
+	int GetFirstImgFrameIdx()
+	{
+		if(m_jointTrajVect.size() ==0)
+			return -1;
+
+		int imgIdx = 1e5;
+		for(int i=0;i<m_jointTrajVect.size();++i)
+		{
+			if(imgIdx > m_jointTrajVect[i].m_initFrameIdx)
+				imgIdx  = m_jointTrajVect[i].m_initFrameIdx;
+		}
+		return imgIdx;
+	}
+	int GetLastImgFrameIdx()
+	{
+		if(m_jointTrajVect.size() ==0)
+			return -1;
+
+		int imgIdx = -1e5;
+		for(int i=0;i<m_jointTrajVect.size();++i)
+		{
+			int lastFrameIdx  = m_jointTrajVect[i].m_initFrameIdx  + (int)m_jointTrajVect[i].m_jointTrajectory.size();
+			if(imgIdx <  lastFrameIdx)
+				imgIdx  = lastFrameIdx;
+		}
+		return imgIdx;
+	}
+	//////////////////////////////////////////////////////////////////////////
+	//Set m_jointPosVect from m_jointTrajVect
+	//////////////////////////////////////////////////////////////////////////
+	void SetCurFrameIdx(int selectedFrameIdx)			//the arguement is actual frame idx, not memVectIdx
+	{
+		/*if(m_jointPosVect.size() != m_jointTrajVect.size())
+		{
+			printf("Mismatch: m_jointPosVect.size() != m_jointTrajVect.size()\n");
+			return;
+		}*/
+
+		int cnt=0;
+		for(int i=0;i<m_jointTrajVect.size();++i)
+		{
+			if(m_jointTrajVect[i].m_jointTrajectory.size()==0)
+				continue;		
+
+			int trajTimeIdx = selectedFrameIdx - m_jointTrajVect[i].m_initFrameIdx;
+			if(trajTimeIdx<0)
+				continue;//trajTimeIdx =0;
+			if(trajTimeIdx >=m_jointTrajVect[i].m_jointTrajectory.size())
+				continue;
+				//trajTimeIdx = int(m_jointTrajVect[i].m_jointTrajectory.size()-1);
+
+			m_jointPosVect[i] = m_jointTrajVect[i].m_jointTrajectory[trajTimeIdx];
+			cnt++;
+		}
+
+		if(cnt == m_jointTrajVect.size())
+			bDraw =true;
+		else 
+			bDraw =false;
+	}
+
+	void ExportJointTrajectory(char* fileName)
+	{
+		ofstream fout(fileName,std::ios_base::app);
+		int maxRange = 1e3;
+		int minRange = -1e3;
+	/*	for(int i=0;i<m_jointTrajVect.size();++i)
+		{
+			minRange = max(minRange,m_jointTrajVect[i].m_initFrameIdx);			//in frameIdx
+			maxRange = min(maxRange,m_jointTrajVect[i].m_initFrameIdx + (int) m_jointTrajVect[i].m_jointTrajectory.size());	//in frameIdx
+		}
+		fout << minRange << " " <<maxRange <<"\n";			//in frameIdx*/
+		for(int i=0;i<m_jointTrajVect.size();++i)
+		{
+			fout << m_jointTrajVect[i].m_initFrameIdx <<" " <<m_jointTrajVect[i].m_jointTrajectory.size() <<"\n";
+			for(int t=0;t<m_jointTrajVect[i].m_jointTrajectory.size();++t)
+			{
+				fout << m_jointTrajVect[i].m_jointTrajectory[t].x << " " << m_jointTrajVect[i].m_jointTrajectory[t].y << " " << m_jointTrajVect[i].m_jointTrajectory[t].z << " ";
+			}
+			fout << "\n";
+		}
+	}
+
+
+	void ImportJointTrajectory(ifstream& fin)
+	{
+		m_jointPosVect.clear();
+		m_jointTrajVect.clear();
+		//		ifstream fin(fileName);
+		int initFrameIdx;
+		int trackedFrameNUm;
+		for(int i=0;i<CURRENT_JOINT_NUM;++i)		//For each joint
+		{
+			fin >> initFrameIdx >> trackedFrameNUm ;
+			m_jointPosVect.push_back(cv::Point3f(0,0,0));
+			m_jointTrajVect.push_back(SJointTraj());
+			m_jointTrajVect.back().m_initFrameIdx = initFrameIdx ;
+			for(int t=0;t<trackedFrameNUm;++t)
+			{
+				cv::Point3f temp;
+				fin >> temp.x >> temp.y >> temp.z;
+
+				if(temp.x==0 && temp.y==0 &&temp.z==0)
+					m_jointTrajVect.back().m_jointTrajectory.push_back(m_jointTrajVect.back().m_jointTrajectory.back());
+				else
+					m_jointTrajVect.back().m_jointTrajectory.push_back(temp);
+			}
+			m_jointPosVect.back() = m_jointTrajVect.back().m_jointTrajectory.front();
+		}
+	}
+};
+
+//Body3DScenes by frame. 
+struct SBody3DScene			
+{
+	int m_imgFramdIdx;
+	std::vector<CBody3D> m_articBodyAtEachTime;
 };
 
 //Each element represents edge cost for each time instance
@@ -243,6 +396,109 @@ struct SPose2D
 	int m_viewIdx;		//unique index for each cam in the global image array
 	int m_panelIdx;	//0~20
 	int m_camIdx;		//1~24
+};
+
+// Donglai's comment: declare InferNode first such that InferEdge can be defined. InferNode will be defined immediately after InferEdge
+struct InferNode;
+
+struct InferEdge
+{
+	float edgeScroe;
+	InferNode* otherNode;
+
+	//debug
+	float debugSpringScore;	
+	float debugConnectScore;	
+};
+
+
+struct InferNode
+{
+	InferNode()
+	{
+		pTargetSurfVox = NULL;
+		scoreSum =0;
+		springScoreSum =0;
+		connectivityScoreSum =0;
+
+		dataScore =0;
+		bTaken = false;
+	}
+	SurfVoxelUnit* pTargetSurfVox;
+	
+	// Data for this node //////////////////////////////////////////////////////////////////
+	cv::Point3f pos;
+	float dataScore;
+	std::vector< vector<InferEdge> > m_edgesToParent;		//There should be 1 parent. outer vector for each jointGroup, inner vector for edges
+	std::vector< vector<InferEdge> > m_edgesToChild;			//There could be multiple children. outer vector for each jointGroup, inner vector for edges
+
+	//Variables for backtracking  //////////////////////////////////////////////////////////////////
+	std::vector<InferNode*> pPrevInferNodeVect;	//pointer for backtracking. made this vector for multiple children case
+	int associatedJointIdx;		//for easier backtracking
+	int originalPropIdx;		//the index when loaded (to look up corresponding part proposals)
+
+	bool bTaken;		//if yes, already used as a joint for a subject
+
+	//Variables for inference //////////////////////////////////////////////////////////////////
+	float scoreSum;		//for inference
+	float dataScoreSum;
+	float springScoreSum;		//for debugging
+	float connectivityScoreSum;		//for debugging 
+
+	std::vector< std::pair<float, int> > neighborBestScore;		//used for backtracking. only for root. max value, joint index
+
+	//ETC //////////////////////////////////////////////////////////////////
+	Bbox3D bbox;	//for NMS
+};
+
+struct SJointCandGroup
+{
+	SJointCandGroup()
+	{
+		pAssociatedJoint= NULL;
+		bDoneAllProcess= false;
+	}
+	std::vector<InferNode*> nodeCandidates;		//I use pointer here, which is the different from SJointCandGroup_old
+
+	STreeElement* pAssociatedJoint;
+
+	//The order of the following do not consistent with the order of m_edgesToParent of InferNode
+	std::vector<SJointCandGroup*> parentCandGroupVector;
+	std::vector<SJointCandGroup*> childCandGroupVector;
+
+	std::vector<SJointCandGroup*> groupsReadyToSendMessageToMe;		//They are ready to send message to me
+															//one-pass case: if this number is same as childCandGroupVector, get messages and do process, and send ready message to the parents
+															//two-pass case: if this number is same as (neighborNum-1), get messages and do process, and send ready message to the other reaming neighbor
+															//				 if this number is same as (neighborNum), do above for all (neighborNum-1) combinations.
+															//				 if this number is same as (neighborNum), compute max marginal for current node. 
+
+	//vector<SJointCandGroup*> groupsISentReadyMessage;		//I should send read-message to all parents (one-pass), or all neighbor(two-passes)
+	bool bDoneAllProcess;			//Tasks: (1) sending messages to all parents (or neighbors), compute max marginal for the root (or everynodes in two-pass case)
+};
+
+//////////////////////////////////////////////////////////////////////////
+// Used of find meaningful candidate using Trajecotry Stream
+struct BoneCandidate
+{
+	//For each element of m_articBodyAtEachTime
+	enum JOINT_ENUM{
+		IDX_CHILD=0,
+		IDX_PARENT
+	};
+
+	bool isBlank()
+	{
+		if(jointPts.size()==0) 
+			return true;
+		else
+			return false;
+	};
+
+	std::vector<int> idxInNodeProposalVect;			//index in the nodeproposal vectors of child and parent vectors
+	//if jointIdx=NULL, use jointPts instead. (For the case sententially generated bone)
+	std::vector<cv::Point3f> jointPts;			//child, parent 
+	int memIdx;			//generated memIdx
+	float score;
 };
 
 }
