@@ -2,6 +2,7 @@ import os
 import SEQ_INFO
 import GPUtil
 import subprocess
+from script_indexMapGen_auto import IndexMap25to30_offset
 
 
 def check_available_gpu(CONFIG):
@@ -18,7 +19,7 @@ def run_reconstruction(seq_info, CONFIG):
     assert(isinstance(seq_info, SEQ_INFO.SEQ_INFO))
     assert(type(CONFIG) == dict)
 
-    done_pose_file = seq_info.processed_path
+    done_pose_file = os.path.join(seq_info.processed_path, 'done_pose_org.log')
 
     if not os.path.exists(done_pose_file):
 
@@ -37,24 +38,40 @@ def run_reconstruction(seq_info, CONFIG):
             proc = subprocess.Popen(cmd, cwd='./caffe_demo/')
             proc.wait()
 
+    else:
+        print('2D pose detection files exist, skip.')
+
     assert os.path.exists(done_pose_file)
 
-    # run reconstruction
-    calibPath = seq_info.calib_path
-    cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_mpm_undist_19pts', seq_info.processed_path + '/body_mpm/', calibPath,
-           str(seq_info.start_idx), str(seq_info.end_idx)]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
+    done_recon_vga = os.path.join(seq_info.processed_path, 'done_recon_vga.log')
+    if not os.path.exists(done_recon_vga):
 
-    calibPath = seq_info.calib_wo_distortion_path
-    cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_all_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
-           str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
-    assert proc.returncode == 0
+        # run reconstruction
+        calibPath = seq_info.calib_path
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_mpm_undist_19pts', seq_info.processed_path + '/body_mpm/', calibPath,
+               str(seq_info.start_idx), str(seq_info.end_idx)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
 
-    cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
-           str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
-    proc = subprocess.Popen(cmd)
-    proc.wait()
-    assert proc.returncode == 0
+        calibPath = seq_info.calib_wo_distortion_path
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_all_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
+               str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
+               str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        open(done_recon_vga, 'a').close()
+
+    else:
+        print('3D vga reconstruction files exist, skip.')
+
+    assert os.path.exists(done_recon_vga)
+
+    IndexMap25to30_offset(seq_info.captures_nas, seq_info.processed_nas, 'specialEvents', seq_info.name)
+    assert os.path.isfile(os.path.join(seq_info.processed_path, 'body_mpm', 'IndexMap25to30_offset.txt'))
