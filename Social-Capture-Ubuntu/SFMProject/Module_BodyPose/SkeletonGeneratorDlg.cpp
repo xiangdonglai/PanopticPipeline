@@ -2,6 +2,7 @@
 #include "BodyPoseReconDT.h"
 #include "DomeImageManager.h"
 #include "Utility.h"
+#include "SyncMan.h"
 
 namespace SkeletonGeneratorDlg
 {
@@ -215,6 +216,151 @@ void Script_Export_3DPS_Json(bool bNormCoord)
 		sprintf(saveFolderPath,"%s/%04d",saveFolderPath,g_askedVGACamNum);
 	CreateFolder(saveFolderPath);
 	g_bodyPoseManager.Save3DPSBodyReconResult_Json(saveFolderPath,bNormCoord);
+}
+
+void Script_VGA_SaveAsHDFrameIdxViaInterpolation()
+{
+	using Module_BodyPose::g_bodyPoseManager;
+	using Module_BodyPose::MODEL_JOINT_NUM_COCO_19;
+	using Module_BodyPose::SBody3DScene;
+	using Module_BodyPose::CBody3D;
+	if(g_syncMan.IsLoaded()==false)
+	{
+		printf("## ERROR:: You should have valid sync index table\n");
+		return;
+	}
+
+	//int offset=1;;
+	char saveFolderPath[512];
+	if(g_bodyPoseManager.m_skeletonHierarchy.size()==MODEL_JOINT_NUM_COCO_19)
+		sprintf(saveFolderPath,"%s/coco19_body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);
+	else
+		sprintf(saveFolderPath,"%s/body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);
+	CreateFolder(saveFolderPath);
+
+	//Find closest HD from VGA
+	int vga_first_frame = g_bodyPoseManager.m_3DPSPoseMemVector.front().m_imgFramdIdx;
+	int hd_first_frame = g_syncMan.ClosestHDfromVGA(vga_first_frame);
+	int vga_last_frame = g_bodyPoseManager.m_3DPSPoseMemVector.back().m_imgFramdIdx;
+	int hd_last_frame = g_syncMan.ClosestHDfromVGA(vga_last_frame);
+
+	for(int hdIdx= hd_first_frame;hdIdx<=hd_last_frame ;++hdIdx)
+	{
+		vector< pair<int,double> > vgaIdxWithOff;
+		bool success = g_syncMan.ClosestVGAsWithOffInfofromHD(hdIdx,vgaIdxWithOff);		//note the +1 offset
+		if(success==false && vgaIdxWithOff.size()<=1)
+		{
+			int vgaIdx = g_syncMan.ClosestVGAfromHD(hdIdx);
+			int idx = vgaIdx - vga_first_frame;
+			if(idx<0 || idx>g_bodyPoseManager.m_3DPSPoseMemVector.size())
+			{
+				printf("ERROR: idx<0 || idx>g_bodyPoseManager.m_3DPSPoseMemVector.size()\n");
+				continue;
+			}
+			SaveBodyReconResult(saveFolderPath,g_bodyPoseManager.m_3DPSPoseMemVector[idx],hdIdx,true);
+		}
+		else   //hdIdxWithOff.size() ==2
+		{
+			int vgaIdx_before = vgaIdxWithOff.front().first ;//- offset ;		//note the +1 offset
+			float offset_before = abs(vgaIdxWithOff.front().second);
+
+			int vgaIdx_after = vgaIdxWithOff.back().first;// - offset ;		//note the +1 offset
+			float offset_after = abs(vgaIdxWithOff.back().second);
+
+			SBody3DScene newBodyScene;
+
+			float offset_sum  = offset_before+offset_after;
+			for(int h=0;h<g_bodyPoseManager.m_skeletalTrajProposals.size();++h)
+			{
+				CBody3D* pBody_before=NULL;
+				CBody3D* pBody_after=NULL;
+				if(g_bodyPoseManager.m_skeletalTrajProposals[h].GetBody3DFromFrameIdx(vgaIdx_before,&pBody_before)==false)
+					continue;
+
+				if(g_bodyPoseManager.m_skeletalTrajProposals[h].GetBody3DFromFrameIdx(vgaIdx_after,&pBody_after)==false)
+					continue;
+
+				newBodyScene.m_articBodyAtEachTime.push_back(*pBody_before);  
+				CBody3D& targetBody = newBodyScene.m_articBodyAtEachTime.back();
+				for(int j=0;j<targetBody.m_jointPosVect.size();++j)
+				{
+					// targetBody.m_jointPosVect[j] = (offset_after*pBody_before->m_jointPosVect[j] + offset_before*pBody_after->m_jointPosVect[j])/offset_sum;
+					const auto sum = offset_after*pBody_before->m_jointPosVect[j] + offset_before*pBody_after->m_jointPosVect[j];
+					targetBody.m_jointPosVect[j].x = sum.x / offset_sum;
+					targetBody.m_jointPosVect[j].y = sum.y / offset_sum;
+					targetBody.m_jointPosVect[j].z = sum.z / offset_sum;
+				}
+			}
+			SaveBodyReconResult(saveFolderPath,newBodyScene,hdIdx ,true);			//note the offset (because current sync table has 1 frame offset to real index)
+		}
+	}
+}
+
+void Script_HD_Load_body3DPS_byFrame(bool bFromSpecificFolder,bool bCoco19) 
+{
+	using Module_BodyPose::g_bodyPoseManager;
+	g_bodyPoseManager.m_3DPSPoseMemVector.clear();
+	g_bodyPoseManager.SetfpsType(FPS_HD_30);
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Try to load from the following orders:
+	//	(g_dataMainFolder)/body_mpm/coco19_body3DPSRecon_updated_vga_hdidx
+	//	(g_dataMainFolder)/body3DPSRecon_updated_vga_hdidx/
+	//	(g_dataMainFolder)/body3DPSRecon_updated/hd
+
+	vector<string> folderPathCand;
+	char fullPath[512];
+	if(bFromSpecificFolder)
+		folderPathCand.push_back(string(g_dataSpecificFolder));
+	sprintf(fullPath,"%s/body_mpm/coco19_body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);//m_domeImageManager.m_currentFrame);
+	folderPathCand.push_back(string(fullPath));
+	sprintf(fullPath,"%s/body_mpm/coco19_body3DPSRecon_updated_vga_hdidx_140",g_dataMainFolder);//m_domeImageManager.m_currentFrame);
+	folderPathCand.push_back(string(fullPath));
+	sprintf(fullPath,"%s/body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);//m_domeImageManager.m_currentFrame);
+	folderPathCand.push_back(string(fullPath));
+	sprintf(fullPath,"%s/body3DPSRecon_updated/hd",g_dataMainFolder);//m_domeImageManager.m_currentFrame);
+	folderPathCand.push_back(string(fullPath));
+	if(bFromSpecificFolder==false)
+		folderPathCand.push_back(string(g_dataSpecificFolder));
+
+	char validFolderPath[512];
+	bool bFound=false;
+	for(int i=0;i<folderPathCand.size();++i)
+	{
+		if(IsFileExist(folderPathCand[i].c_str()))
+		{
+			bFound = true;
+			sprintf(validFolderPath,"%s",folderPathCand[i].c_str());
+			printf("## Found a valid folder: %s",validFolderPath);
+			break;
+		}
+	}
+	if(bFound==false)
+	{
+		printf("Load failure from all possible folders:\n");
+		for(int i=0;i<folderPathCand.size();++i)
+		{
+			printf("\t Failed from: %s\n",folderPathCand[i].c_str());
+		}
+		return;
+	}
+
+	for(int f=0;f<g_poseEstLoadingDataNum;f++)
+	{
+		if(f%500==0)
+		{
+			printf("## Loading: %d/%d\n",f,g_poseEstLoadingDataNum);
+		}
+		//int targetFrameNum = g_poseEstLoadingDataFirstFrameIdx +f*5;
+		int targetFrameNum = g_poseEstLoadingDataFirstFrameIdx + f;
+		
+		char fullPath[512];
+		sprintf(fullPath,"%s/body3DScene_hd%08d.txt",validFolderPath,targetFrameNum);//m_domeImageManager.m_currentFrame);
+		bool bSuccess = g_bodyPoseManager.LoadBodyReconResult(fullPath,targetFrameNum);
+		if(bSuccess ==false)
+			printf("Load failure from %s\n",fullPath);
+	}
+	g_bodyPoseManager.AssignHumanIdentityColorFor3DPSResult();
 }
 
 }

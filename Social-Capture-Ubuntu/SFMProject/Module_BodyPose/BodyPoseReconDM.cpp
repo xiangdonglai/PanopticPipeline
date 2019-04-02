@@ -3426,5 +3426,17 @@ void CPartTrajProposal::OptimizeBoneTraj(vector<CVisualHullManager*>& detectionH
 	m_boneGroupScore = boneGroupScore/boneEndPtNum;
 }
 
+bool CBody4DSubject::GetBody3DFromFrameIdx(int frameIdx, CBody3D** pReturnBody)
+{
+	int idx = frameIdx-m_initFrameIdx;
+	if(idx<0 || idx>=m_finalHumanPose.size())
+		return false;
+	else
+	{
+		*pReturnBody = &m_finalHumanPose[idx];
+		return true;
+	}
+	return false;
+}
 
 }

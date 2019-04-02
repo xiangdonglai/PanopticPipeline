@@ -2,9 +2,38 @@
 #include <vector>
 #include <string>
 #include <cstring>
+#include <boost/filesystem.hpp>
 #include "Constants.h"
 #include "ImportExportDlg.h"
 #include "SkeletonGeneratorDlg.h"
+#include "Utility.h"
+
+void GetFirstLastFrameIdx_last8digit(char* dirPath,int& firstFrameReturn,int& lastFrameReturn)
+{
+	boost::filesystem::path dirname(dirPath);
+	vector<boost::filesystem::path> v;
+	copy(boost::filesystem::directory_iterator(dirname), boost::filesystem::directory_iterator(), std::back_inserter(v));
+	if(v.size()==0)
+	{
+		firstFrameReturn=-1;
+		lastFrameReturn=-1;
+		return;
+	}
+	std::sort(v.begin(),v.end());
+	char initFile[512];
+	char lastFile[512];
+	
+	sprintf(initFile,"%s",v.front().filename().string().c_str() );
+	int initFrameIdx = ExtractFrameIdxFromPath_last8digit(initFile);
+	printf("GetFirstLastFrameIdx:: %s: %d\n",initFile,initFrameIdx );
+
+
+	sprintf(lastFile,"%s",v.back().filename().string().c_str() );
+	int lastFrameIdx = ExtractFrameIdxFromPath_last8digit(lastFile);
+	printf("GetFirstLastFrameIdx:: %s: %d\n",lastFile,lastFrameIdx );
+	firstFrameReturn = initFrameIdx;
+	lastFrameReturn  = lastFrameIdx;
+}
 
 // imitate command line parsing of Hanbyul's original code
 int main(int argc, char** argv)
@@ -81,5 +110,56 @@ int main(int argc, char** argv)
 		g_poseEstLoadingDataNum = g_dataFrameNum;
 		SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame_folderSpecify();
 		SkeletonGeneratorDlg::Script_Export_3DPS_Json(true);
+	}
+	else if (strcmp(option.c_str(),"skel_convert_vga2hd") == 0)
+	{
+		sprintf(g_dataMainFolder, "%s", paramVect[2].c_str());
+		sprintf(g_calibrationFolder, "%s", paramVect[3].c_str());
+
+		g_dataFrameStartIdx = atoi(paramVect[4].c_str());
+		int frameEndIdx = atoi(paramVect[5].c_str());
+		g_dataFrameNum = frameEndIdx - g_dataFrameStartIdx + 1;
+
+		g_askedVGACamNum = atoi(paramVect[6].c_str());
+		sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
+
+		g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
+		g_poseEstLoadingDataNum = g_dataFrameNum;
+		printf("## input: g_dataMainFolder: %s\n",g_dataMainFolder);
+		printf("## input: g_dataSpecificFolder: %s\n",g_dataSpecificFolder);
+		printf("## input: g_calibrationFolder: %s\n",g_calibrationFolder);
+		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
+		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
+
+		g_fpsType=FPS_VGA_25;
+		SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame_folderSpecify();
+		SkeletonGeneratorDlg::Script_VGA_SaveAsHDFrameIdxViaInterpolation();
+	}
+	else if(strcmp(option.c_str(),"skel_export_hd")==0)
+	{
+		sprintf(g_dataMainFolder,"%s",paramVect[2].c_str());
+		sprintf(g_calibrationFolder,"%s",paramVect[3].c_str());
+		sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);
+
+		int firstFrame,lastFrame;
+		GetFirstLastFrameIdx_last8digit(g_dataSpecificFolder,firstFrame,lastFrame);
+		printf("firstFrame: %d, lastFrame: %d",firstFrame,lastFrame);
+		g_dataFrameStartIdx = firstFrame;//atoi(paramVect[4].c_str());
+		int frameEndIdx = lastFrame;//atoi(paramVect[5].c_str());
+		g_dataFrameNum = frameEndIdx-g_dataFrameStartIdx+1;
+
+		g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
+		g_poseEstLoadingDataNum = g_dataFrameNum;
+		printf("## input: g_dataMainFolder: %s\n",g_dataMainFolder);
+		printf("## input: g_dataSpecificFolder: %s\n",g_dataSpecificFolder);
+		printf("## input: g_calibrationFolder: %s\n",g_calibrationFolder);
+		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
+		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
+
+		g_fpsType=FPS_HD_30;
+		//Load HD Skeleton Version
+		SkeletonGeneratorDlg::Script_HD_Load_body3DPS_byFrame(true);
+		//Save as interpolated version
+		SkeletonGeneratorDlg::Script_Export_3DPS_Json(true); //this automatically handle coco19
 	}
 }

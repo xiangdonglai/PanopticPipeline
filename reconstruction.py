@@ -73,5 +73,39 @@ def run_reconstruction(seq_info, CONFIG):
 
     assert os.path.exists(done_recon_vga)
 
-    IndexMap25to30_offset(seq_info.captures_nas, seq_info.processed_nas, 'specialEvents', seq_info.name)
-    assert os.path.isfile(os.path.join(seq_info.processed_path, 'body_mpm', 'IndexMap25to30_offset.txt'))
+    done_recon_hd = os.path.join(seq_info.processed_path, 'done_recon_hd.log')
+    if not os.path.isfile(done_recon_hd):
+        # generate index mapping from VGA to HD.
+        IndexMap25to30_offset(seq_info.captures_nas, seq_info.processed_nas, 'specialEvents', seq_info.name)
+        assert os.path.isfile(os.path.join(seq_info.processed_path, 'body_mpm', 'IndexMap25to30_offset.txt'))
+
+        calibPath = seq_info.calib_wo_distortion_path
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_convert_vga2hd', seq_info.processed_path + '/body_mpm/', calibPath,
+               str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        calibPath = seq_info.calib_wo_distortion_path
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_hd', seq_info.processed_path + '/body_mpm/', calibPath]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        open(done_recon_hd, 'a').close()
+    else:
+        print('3D hd reconstruction files exist, skip.')
+
+    done_hd_video = os.path.join(seq_info.processed_path, 'done_hd_video.log')
+    if not os.path.isfile(done_hd_video):
+        # extract HD videos (for face and hand)
+        for machineIdx in range(31, 47):
+            for diskIdx in range(1, 3):
+                if machineIdx == 46 and diskIdx == 2:
+                    continue
+                cmd = 'bash videoGen_hd.sh {} {} {} {} {}' \
+                    .format(seq_info.captures_nas, 'specialEvents', seq_info.name, machineIdx, diskIdx)
+                os.system(cmd)
+        open(done_hd_video, 'a').close()
+    else:
+        print('HD videos already generated, skip.')
