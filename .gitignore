@@ -1,8 +1,11 @@
 *.zip
 *build/
+*.build_release/
 SiftGPU/
 pba/
 *__pycache__/
 caffe_demo/build
 caffe_demo/.build_release/
 *.caffemodel
+*.mexa64
+bvlcsh/caffe/build

@@ -72,14 +72,6 @@ for idni=1:length(frames)
     idn = frames(idni);
     do_plot = false;
     do_plot_write = false;
-    %if mod(idn,100)==0
-    %    do_plot = true;
-    %    do_plot_write = true;
-    %end
-    %if exist('always_do_plot', 'var') && always_do_plot
-    %    do_plot = true;
-    %    do_plot_write = true;
-    %end
     
     poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
 	if isempty(poseData)

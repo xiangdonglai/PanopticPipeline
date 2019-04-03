@@ -27,9 +27,9 @@ param.octave = 3;
 %% don't edit this part
 
 % path of your caffe
-caffepath = textread('/media/posefs1b/Users/tsimon/loop/devel/Convolutional-Pose-Machines/caffePathMatlab.cfg', '%s', 'whitespace', '\n\t\b ');
+caffepath = './bvlcsh/caffe/';
 disp(caffepath);
-caffepath = [caffepath{1} '/matlab/'];
+caffepath = [caffepath '/matlab/'];
 addpath(caffepath);
 caffe.reset_all();
 

@@ -2,10 +2,11 @@
 addpath('./jsonlab');
 
 seq_name = '190215_uthand2';
-frames_seq = [223:225];
+frames = [223:225];
 poseDirHD = [seq_name '/hdPose3d_stage1_coco19'];
 calibFileName = '/media/posefs1a/Calibration/190211_calib_norm/calib_norm.json';
 nodeIdxs = [0:30];
+panelIdxs = zeros(1,31);
 hand_factor = 1.6;
 exp_name = 'exp551b_fv101b';
 iter_num = 116000;
@@ -21,6 +22,5 @@ cameras = [calibData.cameras{:}];
 hand_factor = 1.6;
 head_factor_coco = 2;
 head_factor_face70 = 1.65;
-CPM_reproject_hands_faces_coco19;
-
 gpu_device = 0;
+CPM_reproject_hands_faces_coco19;
