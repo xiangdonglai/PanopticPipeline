@@ -68,6 +68,24 @@ class SEQ_INFO:
             os.makedirs(self.processed_path)
         assert os.path.isdir(self.processed_path)
 
+    def read_hd_range(self):
+        mapping_file_name = os.path.join(self.processed_path, 'indexMap25to30_offset.txt')
+        assert os.path.isfile(mapping_file_name)
+        with open(mapping_file_name) as f:
+            for i in range(self.start_idx):
+                f.readline()
+            line = f.readline().strip().split()
+            vgaIdx = int(line[0])
+            assert(vgaIdx == self.start_idx)  # sanity check: this is the correct line
+            hd_start = int(line[3])
+            for i in range(self.end_idx - self.start_idx):
+                line = f.readline()
+            line = line.strip().split()
+            vgaIdx = int(line[0])
+            assert(vgaIdx == self.end_idx)
+            hd_end = int(line[3])
+        return hd_start, hd_end
+
 
 def parse_seq(CONFIG):
     # check the data type and length

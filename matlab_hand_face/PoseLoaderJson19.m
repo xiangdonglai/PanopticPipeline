@@ -14,14 +14,11 @@ for f=frameStart:frameEnd
     %data = webread(fileName);
     poseData{end+1} = data;
     poseData{end}.frameIdx = f;
-%     poseData{end}.bodies = data.bodies;     %bodies{}.joint15  contains 1x60 size of vectors
     for i=1:length(poseData{end}.bodies);
         temp = reshape(poseData{end}.bodies{i}.joints19,4,19)';
         poseData{end}.bodies{i}.joints15 = temp(1:19,1:3); %15x3 matrix where each row represents 3D joint location
         poseData{end}.bodies{i}.scores = temp(1:19,4);   %15x1 matrix where each row represents 3D joint score
     end
-  
-    
 end
 end
 

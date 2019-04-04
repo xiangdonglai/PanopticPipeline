@@ -67,33 +67,37 @@ for idc=1:length(nodeIdxs)
     mkdir(sprintf('%s/json/%02d_%02d', out_path, cam.panel, cam.node));
     cnt = cnt +1;
 end
+
 im = zeros(1080,1920,3);
-for idni=1:length(frames)
-    idn = frames(idni);
-    do_plot = false;
-    do_plot_write = false;
-    
-    poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
-	if isempty(poseData)
-		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
-		poseData
-        continue;
-	end
-    poseData = poseData{1};
-    
+for idc=1:length(views)
     tic
-    hdidx = idn;
-    fprintf('HD frame: %d, (par_off: %d/%d)\n', hdidx,par_off,par_skip);
-    for idc=1:length(views)
-        cam = views(idc);
-        cam.M = [cam.R, cam.t(:); 0 0 0 1];
+    cam = views(idc);
+    cam.M = [cam.R, cam.t(:); 0 0 0 1];
+    A = floor(cam.node / 2) + 31;  % only using HD cameras here!
+    B = rem(cam.node, 2) + 1;
+    videoName = sprintf('%s/ve%d-%d.mp4', videoDir, A, B);
+    vidObj = VideoReader(videoName);
+
+    for idni=1:length(frames)
+        idn = frames(idni);
+        if idni == 1
+            assert(idn > 0);
+            vidObj.currentTime = (idn - 1) / 30;  % the HD frame starts from 1, check 'IndexMap25to30_offset.txt'
+        end
+        do_plot = false;
+        do_plot_write = false;
+        
+        poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
+    	if isempty(poseData)
+    		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
+            exit(1);
+    	end
+        poseData = poseData{1};
+        
+        hdidx = idn;
+        fprintf('HD frame: %d', hdidx);
+
         test_imagen = sprintf('%02d_%02d_%08d.jpg', cam.panel, cam.node, hdidx);
-        
-        %         imPath = '/media/posefs4b/Processed/cello/150303
-        imPath = sprintf('%s/%02d_%02d/',imgDir,...
-            cam.panel, cam.node);
-        
-        test_image = fullfile(imPath, test_imagen);
         out_file = sprintf('%s/json/%02d_%02d/%s_l.json',out_path, cam.panel, cam.node, test_imagen);
         try
             data=loadjson((out_file));
@@ -115,7 +119,10 @@ for idni=1:length(frames)
             cam_angles = zeros(1, size(lms,3));
         end
         try
-            im = imread(test_image);
+            % im = imread(test_image);
+            % read a frame from the video
+            % im = getFrameFromVideo(videoDir, cam, idn);
+            im = readFrame(vidObj);
         catch
             fprintf('Error reading %s\n', test_image);
             im = im*0;

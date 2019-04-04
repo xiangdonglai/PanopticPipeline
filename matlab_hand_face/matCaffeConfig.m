@@ -27,7 +27,7 @@ param.octave = 3;
 %% don't edit this part
 
 % path of your caffe
-caffepath = './bvlcsh/caffe/';
+caffepath = '../bvlcsh/caffe/';
 disp(caffepath);
 caffepath = [caffepath '/matlab/'];
 addpath(caffepath);

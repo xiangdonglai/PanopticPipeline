@@ -131,7 +131,7 @@ int main(int argc, char** argv)
 		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
 		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
 
-		g_fpsType=FPS_VGA_25;
+		g_fpsType = FPS_VGA_25;
 		SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame_folderSpecify();
 		SkeletonGeneratorDlg::Script_VGA_SaveAsHDFrameIdxViaInterpolation();
 	}
@@ -156,7 +156,7 @@ int main(int argc, char** argv)
 		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
 		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
 
-		g_fpsType=FPS_HD_30;
+		g_fpsType = FPS_HD_30;
 		//Load HD Skeleton Version
 		SkeletonGeneratorDlg::Script_HD_Load_body3DPS_byFrame(true);
 		//Save as interpolated version
