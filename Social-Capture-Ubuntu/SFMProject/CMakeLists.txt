@@ -23,12 +23,15 @@ include_directories(${OPENGL_INCLUDE_DIRS} ${GLUT_INCLUDE_DIRS} ${GLEW_INCLUDE_D
 include_directories("./")
 include_directories("./Module_BodyPose/")
 include_directories("./Module_VisualHull/")
+include_directories("./Module_Face_PM/")
 
 file(GLOB SOURCES "./*.cpp" "./UtilityGPU.cu")
 file(GLOB BODY_SOURCES "./Module_BodyPose/*.cpp")
 list(APPEND SOURCES ${BODY_SOURCES})
 file(GLOB VISUALHULL_SOURCES "./Module_VisualHull/*.cpp")
 list(APPEND SOURCES ${VISUALHULL_SOURCES})
+file(GLOB FACE_SOURCES "./Module_Face_PM/*.cpp")
+list(APPEND SOURCES ${FACE_SOURCES})
 
 add_definitions(-DLINUX_COMPILE)
 # add_executable(SFMProject ${SOURCES})

@@ -7,6 +7,7 @@
 #include "ImportExportDlg.h"
 #include "SkeletonGeneratorDlg.h"
 #include "Utility.h"
+#include "FaceReconByPMDlg.h"
 
 void GetFirstLastFrameIdx_last8digit(char* dirPath,int& firstFrameReturn,int& lastFrameReturn)
 {
@@ -161,5 +162,33 @@ int main(int argc, char** argv)
 		SkeletonGeneratorDlg::Script_HD_Load_body3DPS_byFrame(true);
 		//Save as interpolated version
 		SkeletonGeneratorDlg::Script_Export_3DPS_Json(true); //this automatically handle coco19
+	}
+	else if(strcmp(option.c_str(),"face_pm_undistort_hd")==0 || strcmp(option.c_str(), "face_pm_recon_hd")==0 || strcmp(option.c_str(),"face_pm_export_hd")==0)
+	{
+		sprintf(g_dataMainFolder,"%s",paramVect[2].c_str());
+		sprintf(g_calibrationFolder,"%s",paramVect[3].c_str());
+		g_dataFrameStartIdx = atoi(paramVect[4].c_str());
+		int frameEndIdx = atoi(paramVect[5].c_str());
+		g_dataFrameNum = frameEndIdx - g_dataFrameStartIdx + 1;
+
+		printf("%s\n",g_dataMainFolder);
+		printf("%s\n",g_calibrationFolder);
+		printf("%d\n",g_dataFrameStartIdx);
+		printf("%d\n",g_dataFrameNum);
+		g_fpsType = FPS_HD_30;
+		g_askedVGACamNum = 31;
+		// merge undistort + Recon
+
+		if (strcmp(option.c_str(),"face_pm_undistort_hd")==0)
+			Module_Face_pm::UndistortDetectionResult();
+		else if (strcmp(option.c_str(), "face_pm_recon_hd")==0)
+			Module_Face_pm::ReconFacePM70();
+		else
+		{
+			g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
+			g_poseEstLoadingDataNum = g_dataFrameNum;
+			Module_Face_pm::Load3DFace();
+			Module_Face_pm::ExportToJson();
+		}
 	}
 }

@@ -45,5 +45,5 @@ head_factor_coco = 2;
 head_factor_face70 = 1.65;
 gpu_device = 0;
 CPM_reproject_hands_faces_coco19;
-Func_Converter_face_json2txt(sprintf('%s/json/', out_path), sprintf('%s/facedetect_pm_org/hd_30/', processed_path), frames_start, frames_end);
+Func_Converter_face_json2txt(sprintf('%s/json/', out_path), sprintf('%s/facedetect_pm_org/hd_30/', out_path), frames_start, frames_end);
 fclose(fopen(sprintf('%s/done_face_2d.log', processed_path), 'a'));

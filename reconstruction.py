@@ -111,8 +111,8 @@ def run_reconstruction(seq_info, CONFIG):
         print('HD videos already generated, skip.')
     assert os.path.exists(done_hd_video)
 
-    done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
     hd_frames_start, hd_frames_end = seq_info.read_hd_range()
+    done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
     if not os.path.isfile(done_face_2d):
         cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; run matlab_hand_face/script_face.m; exit;"'.format(
             seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end)
@@ -120,3 +120,27 @@ def run_reconstruction(seq_info, CONFIG):
     else:
         print('2D face output exist, skip.')
     assert os.path.exists(done_face_2d)
+
+    done_face_3d = os.path.join(seq_info.processed_path, 'done_face_3d.log')
+    if not os.path.isfile(done_face_3d):
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_undistort_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
+               seq_info.calib_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_recon_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_export_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+        open(done_face_3d, 'a').close()
+    else:
+        print('3D face output exist, skip.')
+    assert os.path.exists(done_face_3d)
