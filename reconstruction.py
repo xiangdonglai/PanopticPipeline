@@ -121,6 +121,7 @@ def run_reconstruction(seq_info, CONFIG):
         print('2D face output exist, skip.')
     assert os.path.exists(done_face_2d)
 
+    # reconstruct face
     done_face_3d = os.path.join(seq_info.processed_path, 'done_face_3d.log')
     if not os.path.isfile(done_face_3d):
         cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_undistort_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
@@ -144,3 +145,33 @@ def run_reconstruction(seq_info, CONFIG):
     else:
         print('3D face output exist, skip.')
     assert os.path.exists(done_face_3d)
+
+    # reconstruct hand
+    done_hand_2d = os.path.join(seq_info.processed_path, 'done_hand_2d.log')
+    if not os.path.isfile(done_hand_2d):
+        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; run matlab_hand_face/script_hand_v143_han.m; exit;"'.format(
+            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end)
+        os.system(cmd)
+    else:
+        print('2D hand output exist, skip')
+    assert os.path.isfile(done_hand_2d)
+
+    done_hand_3d = os.path.join(seq_info.processed_path, 'done_hand_3d.log')
+    if not os.path.isfile(done_hand_3d):
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_undistort_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
+               seq_info.calib_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_recon_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_export_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0

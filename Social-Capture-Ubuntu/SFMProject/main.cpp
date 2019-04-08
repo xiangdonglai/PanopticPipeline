@@ -8,6 +8,7 @@
 #include "SkeletonGeneratorDlg.h"
 #include "Utility.h"
 #include "FaceReconByPMDlg.h"
+#include "HandReconDlg.h"
 
 void GetFirstLastFrameIdx_last8digit(char* dirPath,int& firstFrameReturn,int& lastFrameReturn)
 {
@@ -163,7 +164,8 @@ int main(int argc, char** argv)
 		//Save as interpolated version
 		SkeletonGeneratorDlg::Script_Export_3DPS_Json(true); //this automatically handle coco19
 	}
-	else if(strcmp(option.c_str(),"face_pm_undistort_hd")==0 || strcmp(option.c_str(), "face_pm_recon_hd")==0 || strcmp(option.c_str(),"face_pm_export_hd")==0)
+	else if(strcmp(option.c_str(),"face_pm_undistort_hd")==0 || strcmp(option.c_str(), "face_pm_recon_hd")==0 || strcmp(option.c_str(),"face_pm_export_hd")==0
+		|| strcmp(option.c_str(),"hand_undistort_hd")==0 || strcmp(option.c_str(),"hand_recon_hd")==0 || strcmp(option.c_str(),"hand_export_hd")==0)
 	{
 		sprintf(g_dataMainFolder,"%s",paramVect[2].c_str());
 		sprintf(g_calibrationFolder,"%s",paramVect[3].c_str());
@@ -183,12 +185,29 @@ int main(int argc, char** argv)
 			Module_Face_pm::UndistortDetectionResult();
 		else if (strcmp(option.c_str(), "face_pm_recon_hd")==0)
 			Module_Face_pm::ReconFacePM70();
-		else
+		else if (strcmp(option.c_str(),"face_pm_export_hd")==0)
 		{
 			g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
 			g_poseEstLoadingDataNum = g_dataFrameNum;
 			Module_Face_pm::Load3DFace();
 			Module_Face_pm::ExportToJson();
+		}
+		else if (strcmp(option.c_str(),"hand_undistort_hd")==0)
+			Module_Hand::UndistortDetectionResult();
+		else if (strcmp(option.c_str(),"hand_recon_hd")==0)
+			Module_Hand::ReconFingers();
+		else if (strcmp(option.c_str(),"hand_export_hd")==0)
+		{
+			char fullPath[512];
+			sprintf(fullPath, "%s/handRecon/hd_30", g_dataMainFolder);//m_domeImageManager.m_currentFrame);)
+			Module_Hand::g_handReconManager.LoadHand3DByFrame(fullPath, g_dataFrameStartIdx, g_dataFrameNum, true);
+			Module_Hand::g_handReconManager.Scrit_handOutlier_rejection();
+			Module_Hand::Script_ExportToJson();
+		}
+		else
+		{
+			printf("SFMProject: Wrong option.");
+			exit(2);
 		}
 	}
 }

@@ -25,7 +25,7 @@ void UndistortDetectionResult()
 	int frameEnd = g_dataFrameStartIdx+ g_dataFrameNum;
 
 	#pragma omp parallel for
-	for(int f=g_dataFrameStartIdx;f<=frameEnd;++f)
+	for(int f=g_dataFrameStartIdx;f<frameEnd;++f)
 	{
 		printf("## Performing frame %d\n",f);
 		Load_Undist_FaceDetectMultipleCamResult_face70_PoseMachine(poseDetectFolder,newPoseDetectFolder,f,domeImgMan,true);
