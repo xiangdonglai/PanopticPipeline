@@ -90,7 +90,7 @@ for idc=1:length(views)
         poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
     	if isempty(poseData)
     		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
-            exit(1);
+            continue;
     	end
         poseData = poseData{1};
         
