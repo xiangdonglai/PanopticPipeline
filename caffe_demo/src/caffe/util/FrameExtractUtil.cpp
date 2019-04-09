@@ -179,6 +179,7 @@ bool imageExtraction_vga_withDropChecker(VGAPanelInfo& panelInfo
 	//cvReleaseImage(&rgbimg);
 
 //	printf("%d: vs ts: %d (%d)\n",refFrameIdx,(ts-6000)/4,ts);
+    return true;
 }
 
 
