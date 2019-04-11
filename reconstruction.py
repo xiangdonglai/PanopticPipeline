@@ -29,9 +29,9 @@ def run_reconstruction(seq_info, CONFIG):
             assert os.path.isfile('caffe_demo/build/examples/rtpose/poseResultMerger.bin')
 
             # try to launch a executable; should return 0
-            proc = subprocess.Popen(["build/examples/rtpose/rtpose_han.bin"], cwd='./caffe_demo/')
-            proc.wait()
-            assert proc.returncode == 0
+            # proc = subprocess.Popen(["build/examples/rtpose/rtpose_han.bin"], cwd='./caffe_demo/')
+            # proc.wait()
+            # assert proc.returncode == 0
             # now run the program
             assert check_available_gpu(CONFIG)
             cmd = ['bash', 'run_dome.sh', seq_info.captures_nas, seq_info.processed_nas, seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]

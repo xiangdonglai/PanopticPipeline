@@ -32,7 +32,7 @@ edges_body14 = [1 2; 3 4; 4 5; 6 7; 7 8; 9 10; 10 11; 12 13; 13 14];
 bc = hsv(5);
 edge_cols = kron( bc, repmat([0.25, 0.5, 0.75, 1]', 1, 1));
 cols=hsv(21);
-edges = [1,2;2,3;3,4;4,5;1,6;6,7;7,8;8,9;1,10;10,11;11,12;,12,13;
+edges = [1,2;2,3;3,4;4,5;1,6;6,7;7,8;8,9;1,10;10,11;11,12;12,13;
     1,14;14,15;15,16;16,17;1,18;18,19;19,20;20,21];
 bc = hsv(5);
 edge_cols = kron( bc, repmat([0.25, 0.5, 0.75, 1]', 1, 1));
@@ -54,15 +54,15 @@ for idc=1:length(views)
     tic
     cam = views(idc);
     cam.M = [cam.R, cam.t(:); 0 0 0 1];
-    videoName = sprintf('%s/hd_%d_%d.mp4', videoDir, cam.panel, cam.node);
+    videoName = sprintf('%s/hd_%02d_%02d.mp4', videoDir, cam.panel, cam.node);
     vidObj = VideoReader(videoName);
+    
+    % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
+    imgs = read(vidObj, [frames_start+1, frames_end+1]);
 
     for idni=1:length(frames)
         idn = frames(idni);
-        if idni == 1
-            assert(idn > 0);
-            vidObj.currentTime = (idn - 1) / 30;  % the HD frame starts from 1, check 'IndexMap25to30_offset.txt'
-        end
+
         do_plot = false;
     	do_plot_write = false;
 
@@ -85,16 +85,21 @@ for idc=1:length(views)
             pose2D = PoseProject2D(poseData.bodies{idp}.joints15, cam, true);
             lms = cat(3, lms, pose2D');
         end
+
         if ~isempty(lms)
             lms = lms(:, indices_j15, :);
         end
         try
-            im = readFrame(vidObj);
-            % im = imread(test_image);
+            im = imgs(:, :, :, idni);
         catch
-            fprintf('Error reading %s\n', test_image);
+            fprintf('Error reading %s, frame %d\n', videoName, idn);
             im = im*0;
         end
+        
+        % imshow(im);
+        % hold on;
+        % scatter(lms(1, :, 1), lms(2, :, 1), 'b');
+        % scatter(lms(1, :, 2), lms(2, :, 2), 'r');
         
         clear joint_entries;
         im_o = im;

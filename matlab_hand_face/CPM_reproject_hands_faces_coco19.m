@@ -68,29 +68,38 @@ for idc=1:length(nodeIdxs)
     cnt = cnt +1;
 end
 
+poseDataBuffer = {};
+
 im = zeros(1080,1920,3);
 for idc=1:length(views)
     tic
     cam = views(idc);
     cam.M = [cam.R, cam.t(:); 0 0 0 1];
-    videoName = sprintf('%s/hd_%d_%d.mp4', videoDir, cam.panel, cam.node);
+    videoName = sprintf('%s/hd_%02d_%02d.mp4', videoDir, cam.panel, cam.node);
     vidObj = VideoReader(videoName);
+    % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
+    imgs = read(vidObj, [frames_start+1, frames_end+1]);
 
     for idni=1:length(frames)
         idn = frames(idni);
-        if idni == 1
-            assert(idn > 0);
-            vidObj.currentTime = (idn - 1) / 30;  % the HD frame starts from 1, check 'IndexMap25to30_offset.txt'
-        end
         do_plot = false;
         do_plot_write = false;
         
-        poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
-    	if isempty(poseData)
-    		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
-            continue;
-    	end
-        poseData = poseData{1};
+        if idc == 1
+            poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
+        	if isempty(poseData)
+        		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
+                continue;
+        	end
+            poseData = poseData{1};
+            poseDataBuffer{idni} = poseData;
+        else
+            if idni <= length(poseDataBuffer)
+                poseData = poseDataBuffer{idni};
+            else
+                continue;
+            end
+        end
         
         hdidx = idn;
         fprintf('HD frame: %d', hdidx);
@@ -99,7 +108,6 @@ for idc=1:length(views)
         out_file = sprintf('%s/json/%02d_%02d/%s_l.json',out_path, cam.panel, cam.node, test_imagen);
         try
             data=loadjson((out_file));
-            %             data=gason(fileread(out_file));
             fprintf('Found %s, skipping\n', out_file);
             continue;
         catch
@@ -117,10 +125,7 @@ for idc=1:length(views)
             cam_angles = zeros(1, size(lms,3));
         end
         try
-            % im = imread(test_image);
-            % read a frame from the video
-            % im = getFrameFromVideo(videoDir, cam, idn);
-            im = readFrame(vidObj);
+            im = imgs(:, :, :, idni);
         catch
             fprintf('Error reading %s\n', test_image);
             im = im*0;
