@@ -73,9 +73,7 @@ for idc=1:length(views)
     tic
     cam = views(idc);
     cam.M = [cam.R, cam.t(:); 0 0 0 1];
-    A = floor(cam.node / 2) + 31;  % only using HD cameras here!
-    B = rem(cam.node, 2) + 1;
-    videoName = sprintf('%s/ve%d-%d.mp4', videoDir, A, B);
+    videoName = sprintf('%s/hd_%d_%d.mp4', videoDir, cam.panel, cam.node);
     vidObj = VideoReader(videoName);
 
     for idni=1:length(frames)

@@ -9,3 +9,4 @@ caffe_demo/.build_release/
 *.caffemodel
 *.mexa64
 bvlcsh/caffe/build
+*.pyc

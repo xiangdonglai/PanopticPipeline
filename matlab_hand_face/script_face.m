@@ -21,7 +21,7 @@ disp(['processed_path: ', processed_path]);
 disp(['calib_name: ', calib_name]);
 disp(['frames: ', num2str(frames_start), ' to ', num2str(frames_end)]);
 
-videoDir = sprintf('/media/domedbweb/develop/webdata/dataset/%s/videos/hd', seq_name);
+videoDir = sprintf('/media/domedbweb/develop/webdata/dataset/%s/videos/hd_shared_crf20', seq_name);
 frames = [frames_start:frames_end];
 pose_frame_offset = 0;
 poseDirHD = [processed_path, '/body_mpm/coco19_body3DPSRecon_json_normCoord/hd/'];
