@@ -102,7 +102,7 @@ for idc=1:length(views)
         end
         
         hdidx = idn;
-        fprintf('HD frame: %d', hdidx);
+        fprintf('HD frame: %d\n', hdidx);
 
         test_imagen = sprintf('%02d_%02d_%08d.jpg', cam.panel, cam.node, hdidx);
         out_file = sprintf('%s/json/%02d_%02d/%s_l.json',out_path, cam.panel, cam.node, test_imagen);

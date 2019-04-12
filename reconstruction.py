@@ -175,3 +175,8 @@ def run_reconstruction(seq_info, CONFIG):
         proc = subprocess.Popen(cmd)
         proc.wait()
         assert proc.returncode == 0
+
+        open(done_hand_3d, 'a').close()
+    else:
+        print('3D hand output exist, skip.')
+        assert os.path.exists(done_hand_3d)
