@@ -32,9 +32,10 @@ def run_reconstruction(seq_info, CONFIG):
             # proc = subprocess.Popen(["build/examples/rtpose/rtpose_han.bin"], cwd='./caffe_demo/')
             # proc.wait()
             # assert proc.returncode == 0
+
             # now run the program
             assert check_available_gpu(CONFIG)
-            cmd = ['bash', 'run_dome.sh', seq_info.captures_nas, seq_info.processed_nas, seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
+            cmd = ['bash', 'run_dome.sh', seq_info.captures_nas, seq_info.processed_nas, seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num), str(seq_info.num_gpu)]
             proc = subprocess.Popen(cmd, cwd='./caffe_demo/')
             proc.wait()
 
@@ -121,6 +122,8 @@ def run_reconstruction(seq_info, CONFIG):
         print('2D face output exist, skip.')
     assert os.path.exists(done_face_2d)
 
+    # TODO: Get rid of Matlab.
+    # TODO: The hand and face reconstruction can be parallelized.
     # reconstruct face
     done_face_3d = os.path.join(seq_info.processed_path, 'done_face_3d.log')
     if not os.path.isfile(done_face_3d):

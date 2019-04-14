@@ -1,4 +1,4 @@
-if [ "$#" -ne 5 ]; then
+if [ "$#" -ne 6 ]; then
 	echo "Usage: $0 rawFolder saveFolder frameStartIdx frameEnd camNum"
 	echo "e.g., $0 /media/posefs5a/Captures/SocialGames/160422_ultimatum1 /media/posefs5b/Processed/SocialGames/160422_ultimatum1 100 500 140"
 	exit 1;
@@ -11,6 +11,7 @@ savePath="heatmaps_org/vga_25"
 frameStart=$3
 frameEnd=$4
 camSamplingNum=$5
+numgpu=$6
 
 echo "::Processing: rawDataPath: $rawMainPath"
 echo "::Processing: saveMainPath: $mainPath"
@@ -22,5 +23,5 @@ mkdir -p $mainPath/$savePath
 
 #build/examples/rtpose/rtpose_han.bin --rawDir $rawMainPath --num_gpu 1 --logtostderr --no_frame_drops --write_txt $mainPath/$savePath --resolution 640x480 --num_scales 3 --scale_gap 0.15 --frame_start $frameStart --frame_end $frameEnd  --start_device 3 --panel_start 1 --panel_end 20  --cam_sampleNum $camSamplingNum
 #build/examples/rtpose/rtpose_han.bin --rawDir $rawMainPath --num_gpu 4 --logtostderr --no_frame_drops --write_txt $mainPath/$savePath --resolution 640x480 --num_scales 3 --scale_gap 0.15 --frame_start $frameStart --frame_end $frameEnd  --start_device 0 --panel_start 1 --panel_end 20  --cam_sampleNum $camSamplingNum
-build/examples/rtpose/rtpose_han.bin --rawDir $rawMainPath --num_gpu 4 --logtostderr --no_frame_drops --write_txt $mainPath/$savePath --resolution 640x480 --num_scales 3 --scale_gap 0.15 --frame_start $frameStart --frame_end $frameEnd  --start_device 0 --panel_start 1 --panel_end 20  --cam_sampleNum $camSamplingNum
+build/examples/rtpose/rtpose_han.bin --rawDir $rawMainPath --num_gpu $numgpu --logtostderr --no_frame_drops --write_txt $mainPath/$savePath --resolution 640x480 --num_scales 3 --scale_gap 0.15 --frame_start $frameStart --frame_end $frameEnd  --start_device 0 --panel_start 1 --panel_end 20  --cam_sampleNum $camSamplingNum
 

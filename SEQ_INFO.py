@@ -2,7 +2,7 @@ import os
 
 
 class SEQ_INFO:
-    def __init__(self, name, calib, start, end, cam_num, captures_nas, processed_nas):
+    def __init__(self, name, calib, start, end, cam_num, captures_nas, processed_nas, num_gpu=4):
         assert type(name) == str
         assert type(calib) == str
         assert type(start) == int
@@ -17,6 +17,7 @@ class SEQ_INFO:
         self._cam_num = cam_num
         self._captures_nas = captures_nas
         self._processed_nas = processed_nas
+        self.num_gpu = num_gpu
 
     @property
     def name(self):
@@ -97,11 +98,12 @@ def parse_seq(CONFIG):
     assert(type(CONFIG['camera_number']) == list and len(CONFIG['camera_number']) == num_sequence)
     assert(type(CONFIG['captures_nas']) == list and len(CONFIG['captures_nas']) == num_sequence)
     assert(type(CONFIG['processed_nas']) == list and len(CONFIG['processed_nas']) == num_sequence)
+    assert(type(CONFIG['num_gpu']) == list and len(CONFIG['num_gpu']) == num_sequence)
 
     seq_infos = []
     for i in range(num_sequence):
         info = SEQ_INFO(CONFIG['sequence_names'][i], CONFIG['calibration_data'][i], CONFIG['start_index'][i], CONFIG['end_index'][i],
-                        CONFIG['camera_number'][i], CONFIG['captures_nas'][i], CONFIG['processed_nas'][i])
+                        CONFIG['camera_number'][i], CONFIG['captures_nas'][i], CONFIG['processed_nas'][i], CONFIG['num_gpu'][i])
         info.check_path()
         seq_infos.append(info)
     return seq_infos
