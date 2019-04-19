@@ -15,9 +15,16 @@ for f=frameStart:frameEnd
     poseData{end+1} = data;
     poseData{end}.frameIdx = f;
     for i=1:length(poseData{end}.bodies);
-        temp = reshape(poseData{end}.bodies{i}.joints19,4,19)';
-        poseData{end}.bodies{i}.joints15 = temp(1:19,1:3); %15x3 matrix where each row represents 3D joint location
-        poseData{end}.bodies{i}.scores = temp(1:19,4);   %15x1 matrix where each row represents 3D joint score
+        if isfield(poseData{end}.bodies{i}, 'joints26')
+            num_kp = 26;
+            temp = reshape(poseData{end}.bodies{i}.joints26,4,num_kp)';
+        else
+            assert(isfield(poseData{end}.bodies{i}, 'joints19'));
+            num_kp = 19;
+            temp = reshape(poseData{end}.bodies{i}.joints19,4,num_kp)';
+        end
+        poseData{end}.bodies{i}.joints15 = temp(1:num_kp,1:3); %15x3 matrix where each row represents 3D joint location
+        poseData{end}.bodies{i}.scores = temp(1:num_kp,4);   %15x1 matrix where each row represents 3D joint score
     end
 end
 end

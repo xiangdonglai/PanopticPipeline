@@ -4,12 +4,13 @@ addpath('../cocoapi/MatlabAPI/');  % for gason used in 'PoseLoaderJson19', make 
 
 % using about 1.3G GPU memory
 
-% Input argument that should be set;
+% Input argument that should be set:
 % seq_name: to be passed in
 % calib_name: to be passed in
 % processed-path: to be passed in
 % frames_start: to be passed in
 % frames_end: to be passed in
+% pose_folder = 'coco19_body3DPSRecon_json_normCoord' or 'op25_body3DPSRecon_json_normCoord'
 % e.g.
 % seq_name = '190215_uthand2';
 % calib_name = '190211_calib_norm';
@@ -20,11 +21,12 @@ disp(['seq_name: ', seq_name]);
 disp(['processed_path: ', processed_path]);
 disp(['calib_name: ', calib_name]);
 disp(['frames: ', num2str(frames_start), ' to ', num2str(frames_end)]);
+disp(['pose_folder: ', pose_folder]);
 
 videoDir = sprintf('/media/domedbweb/develop/webdata/dataset/%s/videos/hd_shared_crf20', seq_name);
 frames = [frames_start:frames_end];
 pose_frame_offset = 0;
-poseDirHD = [processed_path, '/body_mpm/coco19_body3DPSRecon_json_normCoord/hd/'];
+poseDirHD = sprintf('%s/body_mpm/%s/hd/', processed_path, pose_folder);
 calibFileName = sprintf('/media/posefs1a/Calibration/%s/calib_norm.json', calib_name);
 nodeIdxs = [0:30];
 panelIdxs = zeros(1,31);

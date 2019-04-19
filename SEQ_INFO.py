@@ -70,7 +70,7 @@ class SEQ_INFO:
         assert os.path.isdir(self.processed_path)
 
     def read_hd_range(self):
-        mapping_file_name = os.path.join(self.processed_path, 'indexMap25to30_offset.txt')
+        mapping_file_name = os.path.join(self.processed_path, 'indexMap25to30.txt')
         assert os.path.isfile(mapping_file_name)
         with open(mapping_file_name) as f:
             for i in range(self.start_idx):

@@ -54,10 +54,12 @@ def run_reconstruction(seq_info, CONFIG):
     if CONFIG['2D_detector'] == 0:
         pts = 19  # flags to call SFMProject
         kp_fmt = 'mpm19'
+        pose_folder = 'coco19_body3DPSRecon_json_normCoord'
 
     elif CONFIG['2D_detector'] == 1:
         pts = 25  # flags to call SFMProject
         kp_fmt = 'op25'
+        pose_folder = 'op25_body3DPSRecon_json_normCoord'
 
     done_recon_vga = os.path.join(seq_info.processed_path, 'done_recon_vga.log')
     if not os.path.exists(done_recon_vga):
@@ -112,9 +114,6 @@ def run_reconstruction(seq_info, CONFIG):
     else:
         print('3D hd reconstruction files exist, skip.')
 
-    print('here')
-    exit(2)
-
     done_hd_video = os.path.join(seq_info.processed_path, 'done_hd_video.log')
     if not os.path.isfile(done_hd_video):
         # extract HD videos (for face and hand)
@@ -133,8 +132,8 @@ def run_reconstruction(seq_info, CONFIG):
     hd_frames_start, hd_frames_end = seq_info.read_hd_range()
     done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
     if not os.path.isfile(done_face_2d):
-        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; run matlab_hand_face/script_face.m; exit;"'.format(
-            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end)
+        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = {}; run matlab_hand_face/script_face.m; exit;"'.format(
+            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
         os.system(cmd)
     else:
         print('2D face output exist, skip.')

@@ -86,7 +86,7 @@ for idc=1:length(views)
         do_plot_write = false;
         
         if idc == 1
-            poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
+            poseData = PoseLoaderJson(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
         	if isempty(poseData)
         		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
                 continue;
