@@ -23,7 +23,7 @@ def run_reconstruction(seq_info, CONFIG):
 
     if not os.path.exists(done_pose_file):
 
-        # run 2D Detector (caffe_demo or OpenPose_dome)
+        # run 2D Detector (caffe_demo)
         if CONFIG['2D_detector'] == 0:
             assert os.path.isfile('caffe_demo/build/examples/rtpose/rtpose_han.bin')
             assert os.path.isfile('caffe_demo/build/examples/rtpose/poseResultMerger.bin')
@@ -39,29 +39,44 @@ def run_reconstruction(seq_info, CONFIG):
             proc = subprocess.Popen(cmd, cwd='./caffe_demo/')
             proc.wait()
 
+        # run 2D Detector (OpenPose_dome)
+        elif CONFIG['2D_detector'] == 1:
+            assert os.path.isfile('openpose/build/examples/dome/1_dome_input_and_output.bin')
+            cmd = ['bash', 'run_multi_donglai.sh', seq_info.captures_nas, seq_info.processed_nas,
+                   seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num), str(seq_info.num_gpu)]
+            proc = subprocess.Popen(cmd, cwd='./openpose/')
+            proc.wait()
     else:
         print('2D pose detection files exist, skip.')
 
     assert os.path.exists(done_pose_file)
+
+    if CONFIG['2D_detector'] == 0:
+        pts = 19  # flags to call SFMProject
+        kp_fmt = 'mpm19'
+
+    elif CONFIG['2D_detector'] == 1:
+        pts = 25  # flags to call SFMProject
+        kp_fmt = 'op25'
 
     done_recon_vga = os.path.join(seq_info.processed_path, 'done_recon_vga.log')
     if not os.path.exists(done_recon_vga):
 
         # run reconstruction
         calibPath = seq_info.calib_path
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_mpm_undist_19pts', seq_info.processed_path + '/body_mpm/', calibPath,
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_mpm_undist_{}pts'.format(pts), seq_info.processed_path + '/body_mpm/', calibPath,
                str(seq_info.start_idx), str(seq_info.end_idx)]
         proc = subprocess.Popen(cmd)
         proc.wait()
 
         calibPath = seq_info.calib_wo_distortion_path
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_all_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_all_vga_{}'.format(kp_fmt), seq_info.processed_path + '/body_mpm/', calibPath,
                str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
         proc = subprocess.Popen(cmd)
         proc.wait()
         assert proc.returncode == 0
 
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_vga_mpm19', seq_info.processed_path + '/body_mpm/', calibPath,
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_vga_{}'.format(kp_fmt), seq_info.processed_path + '/body_mpm/', calibPath,
                str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
         proc = subprocess.Popen(cmd)
         proc.wait()
@@ -81,14 +96,14 @@ def run_reconstruction(seq_info, CONFIG):
         assert os.path.isfile(os.path.join(seq_info.processed_path, 'body_mpm', 'IndexMap25to30_offset.txt'))
 
         calibPath = seq_info.calib_wo_distortion_path
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_convert_vga2hd', seq_info.processed_path + '/body_mpm/', calibPath,
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_convert_vga2hd_{}'.format(kp_fmt), seq_info.processed_path + '/body_mpm/', calibPath,
                str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num)]
         proc = subprocess.Popen(cmd)
         proc.wait()
         assert proc.returncode == 0
 
         calibPath = seq_info.calib_wo_distortion_path
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_hd', seq_info.processed_path + '/body_mpm/', calibPath]
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'skel_export_hd_{}'.format(kp_fmt), seq_info.processed_path + '/body_mpm/', calibPath]
         proc = subprocess.Popen(cmd)
         proc.wait()
         assert proc.returncode == 0
@@ -96,6 +111,9 @@ def run_reconstruction(seq_info, CONFIG):
         open(done_recon_hd, 'a').close()
     else:
         print('3D hd reconstruction files exist, skip.')
+
+    print('here')
+    exit(2)
 
     done_hd_video = os.path.join(seq_info.processed_path, 'done_hd_video.log')
     if not os.path.isfile(done_hd_video):

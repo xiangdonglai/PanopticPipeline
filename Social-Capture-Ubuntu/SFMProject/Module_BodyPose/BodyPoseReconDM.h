@@ -400,12 +400,15 @@ public:
 
 	// Node Proposal Generation
 	void ProbVolumeRecoe_nodePartProposals_fromPoseMachine_coco19(const char* dataMainFolder,const char* calibFolder,const int askedCamNum, const int frameIdx, bool bSaveCostMap, bool isHD=false, bool bCoco19=false);
+	void ProbVolumeRecoe_nodePartProposals_op25(const char* dataMainFolder,const char* calibFolder,const int askedCamNum, const int frameIdx,bool bSaveCostMap,bool isHD=false);
 	void ConstructJointHierarchy(int jointNum);
 	void SaveNodePartProposals(const char* dataMainFolder,const int cameraNum,const int frameIdx,const CVisualHullManager* pDetectHull,const vector<STreeElement*>& skeletonHierarchy,int actualValidCamNum=-1,bool isHD=false);
 
 	// 3DPS pose estimation
 	void Optimization3DPS_fromDetection_oneToOne_coco19(const char* dataMainFolder,const char* calibFolder,const int askedCamNum,bool isHD=false,bool bCoco19=false); //optimize poseReconMem.m_poseAtEachFrame
+	void Optimization3DPS_fromDetection_oneToOne_op25(const char* dataMainFolder,const char* calibFolder,const int askedCamNum,bool isHD=false);
 	void Save3DPSBodyReconResult_Json(char* saveFolderPath,bool bNormCoord,bool bAnnotated=false);
+	void SaveNodePartProposalsOP25(const char* dataMainFolder,const int cameraNum,const int frameIdx,const CVisualHullManager* pDetectHull,const vector<STreeElement*>& skeletonHierarchy,int actualValidCamNum=-1,bool isHD=false);
 
 	// File IO
 	void LoadNodePartProposals(const char* fullPath,const int imgFrameIdx,bool bRevisualize,bool bLoadPartProposal=true);

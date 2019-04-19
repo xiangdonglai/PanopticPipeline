@@ -51,7 +51,7 @@ int main(int argc, char** argv)
 		sprintf(g_calibrationFolder, "%s", paramVect[2].c_str()); // defined in Constants.cpp
 		ImportExportDlg::OnBnTransform2NormalizedCalibrationCoord();
 	}
-	else if (strcmp(option.c_str(),"skel_mpm_undist_19pts") == 0)
+	else if (strcmp(option.c_str(),"skel_mpm_undist_19pts") == 0 || strcmp(option.c_str(),"skel_mpm_undist_25pts") == 0)
 	{
 		// run undistortion
 		sprintf(g_dataMainFolder, "%s", paramVect[2].c_str());  // defined in Constants.cpp
@@ -66,9 +66,15 @@ int main(int argc, char** argv)
 		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
 		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
 
-		SkeletonGeneratorDlg::Script_Util_Undistort_PoseMachine2DResult_mpm_19joints(false);
+		if (strcmp(option.c_str(),"skel_mpm_undist_19pts") == 0)
+			SkeletonGeneratorDlg::Script_Util_Undistort_PoseMachine2DResult_mpm_19joints(false);
+		else
+		{
+			assert(strcmp(option.c_str(),"skel_mpm_undist_25pts") == 0);
+			SkeletonGeneratorDlg::Script_Util_Undistort_PoseMachine2DResult_mpm_25joints(false);
+		}
 	}
-	else if (strcmp(option.c_str(),"skel_all_vga_mpm19") == 0)
+	else if (strcmp(option.c_str(),"skel_all_vga_mpm19") == 0 || strcmp(option.c_str(), "skel_all_vga_op25") == 0)
 	{
 		sprintf(g_dataMainFolder, "%s", paramVect[2].c_str());
 		sprintf(g_calibrationFolder, "%s", paramVect[3].c_str());
@@ -89,14 +95,26 @@ int main(int argc, char** argv)
 		printf("## input: g_dataFrameStartIdx: %d\n",g_dataFrameStartIdx);
 		printf("## input: g_dataFrameNum: %d\n",g_dataFrameNum);
 
-		SkeletonGeneratorDlg::Script_NodePartProposalRecon_fromPoseMachine_coco19();
-		SkeletonGeneratorDlg::Script_3DPS_Reconstruct_PoseMachine_coco19();
 		g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
 		g_poseEstLoadingDataNum = g_dataFrameNum;
-		SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame(true);
-		SkeletonGeneratorDlg::Script_3DPS_Optimization_usingDetectionPeaks(true);
+
+		if (strcmp(option.c_str(),"skel_all_vga_mpm19") == 0)
+		{
+			SkeletonGeneratorDlg::Script_NodePartProposalRecon_fromPoseMachine_coco19();
+			SkeletonGeneratorDlg::Script_3DPS_Reconstruct_PoseMachine_coco19();
+			SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame(true);
+			SkeletonGeneratorDlg::Script_3DPS_Optimization_usingDetectionPeaks(true);
+		}
+		else
+		{
+			assert(strcmp(option.c_str(), "skel_all_vga_op25") == 0);
+			SkeletonGeneratorDlg::Script_NodePartProposalRecon_op25();
+			SkeletonGeneratorDlg::Script_3DPS_Reconstruct_op25();
+			SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame_op25();
+			SkeletonGeneratorDlg::Script_3DPS_Optimization_usingDetectionPeaks_op25();
+		}
 	}
-	else if (strcmp(option.c_str(),"skel_export_vga_mpm19") == 0)
+	else if (strcmp(option.c_str(),"skel_export_vga_mpm19") == 0 || strcmp(option.c_str(),"skel_export_vga_op25") == 0)
 	{
 		sprintf(g_dataMainFolder, "%s", paramVect[2].c_str());
 		sprintf(g_calibrationFolder, "%s", paramVect[3].c_str());
@@ -106,14 +124,17 @@ int main(int argc, char** argv)
 		g_dataFrameNum = frameEndIdx - g_dataFrameStartIdx + 1;
 
 		g_askedVGACamNum = atoi(paramVect[6].c_str());			//additional parameter...  usually 140 or 480
-		sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
+		if (strcmp(option.c_str(),"skel_export_vga_mpm19") == 0)
+			sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
+		else
+			sprintf(g_dataSpecificFolder,"%s/op25_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
 
 		g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
 		g_poseEstLoadingDataNum = g_dataFrameNum;
 		SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame_folderSpecify();
 		SkeletonGeneratorDlg::Script_Export_3DPS_Json(true);
 	}
-	else if (strcmp(option.c_str(),"skel_convert_vga2hd") == 0)
+	else if (strcmp(option.c_str(),"skel_convert_vga2hd_mpm19") == 0 || strcmp(option.c_str(),"skel_convert_vga2hd_op25") == 0)
 	{
 		sprintf(g_dataMainFolder, "%s", paramVect[2].c_str());
 		sprintf(g_calibrationFolder, "%s", paramVect[3].c_str());
@@ -123,7 +144,13 @@ int main(int argc, char** argv)
 		g_dataFrameNum = frameEndIdx - g_dataFrameStartIdx + 1;
 
 		g_askedVGACamNum = atoi(paramVect[6].c_str());
-		sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
+		if (strcmp(option.c_str(),"skel_convert_vga2hd_mpm19") == 0)
+			sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
+		else
+		{
+			assert(strcmp(option.c_str(), "skel_convert_vga2hd_op25") == 0);
+			sprintf(g_dataSpecificFolder,"%s/op25_body3DPSRecon_updated/%04d",g_dataMainFolder,g_askedVGACamNum);
+		}
 
 		g_poseEstLoadingDataFirstFrameIdx = g_dataFrameStartIdx;
 		g_poseEstLoadingDataNum = g_dataFrameNum;
@@ -137,11 +164,17 @@ int main(int argc, char** argv)
 		SkeletonGeneratorDlg::Script_Load_body3DPS_byFrame_folderSpecify();
 		SkeletonGeneratorDlg::Script_VGA_SaveAsHDFrameIdxViaInterpolation();
 	}
-	else if(strcmp(option.c_str(),"skel_export_hd")==0)
+	else if(strcmp(option.c_str(),"skel_export_hd_mpm19")==0 || strcmp(option.c_str(),"skel_export_hd_op25")==0)
 	{
 		sprintf(g_dataMainFolder,"%s",paramVect[2].c_str());
 		sprintf(g_calibrationFolder,"%s",paramVect[3].c_str());
-		sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);
+		if (strcmp(option.c_str(),"skel_export_hd_mpm19") == 0)
+			sprintf(g_dataSpecificFolder,"%s/coco19_body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);
+		else
+		{
+			assert(strcmp(option.c_str(),"skel_export_hd_op25")==0);
+			sprintf(g_dataSpecificFolder,"%s/op25_body3DPSRecon_updated_vga_hdidx",g_dataMainFolder);
+		}
 
 		int firstFrame,lastFrame;
 		GetFirstLastFrameIdx_last8digit(g_dataSpecificFolder,firstFrame,lastFrame);
@@ -209,5 +242,10 @@ int main(int argc, char** argv)
 			printf("SFMProject: Wrong option.");
 			exit(2);
 		}
+	}
+	else
+	{
+		printf("SFMProject: Wrong option.");
+		exit(2);
 	}
 }

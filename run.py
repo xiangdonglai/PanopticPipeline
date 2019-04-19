@@ -43,7 +43,7 @@ if __name__ == '__main__':
     # process the sequence information
     seq_infos = parse_seq(CONFIG)
 
-    assert(CONFIG['2D_detector'] in (0,))
+    assert(CONFIG['2D_detector'] in (0, 1))
 
     # launch reconstruction
     for seq in seq_infos:

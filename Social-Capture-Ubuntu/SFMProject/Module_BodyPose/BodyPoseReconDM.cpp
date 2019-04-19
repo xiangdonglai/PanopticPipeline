@@ -499,7 +499,7 @@ void CBodyPoseRecon::ProbVolumeRecoe_nodePartProposals_fromPoseMachine_coco19(co
 	int jointNum = targetJointIdxVect.size();
 	bool bCudaSuccessAll=true;
 	//#pragma omp parallel for num_threads(10)
-	#pragma omp parallel for num_threads(10)
+	#pragma omp parallel for
 	for(int jj=0;jj<targetJointIdxVect.size();++jj)
 	{
 		BodyJointEnum targetJointIdx = targetJointIdxVect[jj];
@@ -876,6 +876,538 @@ void CBodyPoseRecon::ProbVolumeRecoe_nodePartProposals_fromPoseMachine_coco19(co
 }
 
 
+void CBodyPoseRecon::ProbVolumeRecoe_nodePartProposals_op25(const char* dataMainFolder,const char* calibFolder,const int askedCamNum, const int frameIdx,bool bSaveCostMap,bool isHD)
+{
+	int modelJointNum;
+	char poseDetectFolderName[512];
+
+	modelJointNum= MODEL_JOINT_NUM_OP_25;
+	sprintf(poseDetectFolderName,"op25_poseDetect_pm");
+
+	double gaussianBandwidth = 20;
+	if(isHD)
+		gaussianBandwidth =30;
+
+	g_clock.tic();
+	//To compute working volume, we should load full dome
+	CDomeImageManager fullDome;
+	fullDome.InitDomeCamOnlyByExtrinsic(calibFolder);
+	fullDome.CalcWorldScaleParameters();
+	fullDome.DeleteMemory();
+
+	//Parameter setting
+	CDomeImageManager domeImageManager;
+	domeImageManager.SetCalibFolderPath(calibFolder);
+	if(isHD==false)
+		domeImageManager.InitDomeCamVgaHd(askedCamNum,false);
+	else
+		domeImageManager.InitDomeCamVgaHdKinect(0,CDomeImageManager::LOAD_SENSORS_HD);
+
+	domeImageManager.SetFrameIdx(frameIdx);		//Should set this, because domeImageManager.GetFrameIdx() is used 
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Load detected 2d pose. Save outer vector is for each image, and inner vector is for each instance (person)
+	vector< vector<SPose2D> > detectedPoseVect;				//this order should be the same as enum PoseMachine2DJointEnum 
+	char poseDetectFolder[128];
+	if(isHD==false)
+		sprintf(poseDetectFolder,"%s/%s/vga_25",dataMainFolder,poseDetectFolderName);
+	else
+		sprintf(poseDetectFolder,"%s/%s/hd_30",dataMainFolder,poseDetectFolderName);
+	vector<int> validCamIdxVect;
+	bool isLoadDetect = Module_BodyPose::LoadPoseDetectMultipleCamResult_PoseMachine(poseDetectFolder,domeImageManager.GetFrameIdx(),domeImageManager.m_domeViews,detectedPoseVect,validCamIdxVect,isHD);
+	if(isLoadDetect==false)
+	{
+		printf("## Error: Cannot load pose detection results. \n");
+		return;
+	}
+	else
+		printf("## PoseDetect result has been successfully loaded \n");
+
+	if(validCamIdxVect.size()!=domeImageManager.GetCameraNum())
+	{
+		printf("## Warning: askedCamNum (%d) is larger than actually valid camera number (%d)in detection\n", domeImageManager.m_domeViews.size(),validCamIdxVect.size());
+		vector<int> newOrders;
+		domeImageManager.DeleteSelectedCamerasByValidVect(validCamIdxVect,newOrders);
+		vector< vector<SPose2D> > detectedPoseVect_updated;				
+		detectedPoseVect_updated.reserve(validCamIdxVect.size());
+		for(int i=0;i<newOrders.size();++i)
+		{
+			detectedPoseVect_updated.push_back(detectedPoseVect[newOrders[i]]);
+		}
+		detectedPoseVect =detectedPoseVect_updated;
+		printf("## After Filtering: askedCamNum (%d) == valid camera number (%d) in detection\n", domeImageManager.m_domeViews.size(),validCamIdxVect.size());
+	}
+
+	int cameraNum  = domeImageManager.m_domeViews.size();
+	//make voxelVect (can be substituted by Octree)
+	//Visual Hull
+	float xMin = DOME_VOLUMECUT_CENTER_PT.x - DOME_VOLUMECUT_RADIOUS;
+	float xMax = DOME_VOLUMECUT_CENTER_PT.x + DOME_VOLUMECUT_RADIOUS;
+	float yMin = DOME_VOLUMECUT_CENTER_PT.y - DOME_VOLUMECUT_RADIOUS*0.5;
+	float yMax = DOME_VOLUMECUT_CENTER_PT.y + DOME_VOLUMECUT_RADIOUS*0.7;
+	float zMin = DOME_VOLUMECUT_CENTER_PT.z - DOME_VOLUMECUT_RADIOUS;
+	float zMax = DOME_VOLUMECUT_CENTER_PT.z + DOME_VOLUMECUT_RADIOUS;
+	printfLog("DomeCenter: %f %f %f\n",DOME_VOLUMECUT_CENTER_PT.x,DOME_VOLUMECUT_CENTER_PT.y,DOME_VOLUMECUT_CENTER_PT.z);
+	printfLog("VolumeSize: %f %f %f %f %f %f\n",xMin,xMax,yMin,yMax,zMin,zMax);
+	float voxelSize_inCM = VOXEL_SIZE_CM;
+	float voxelSize = voxelSize_inCM/WORLD_TO_CM_RATIO;		//CM to WorldSize
+	printfLog("voxelSize %f cm --> %f(WU) \n",voxelSize_inCM,voxelSize);
+	g_clock.toc("Loading Detection Data");
+
+	//////////////////////////////////////////////////////////////////////////
+	//Select target joints
+	ConstructJointHierarchy(modelJointNum);		//jointNum 14: with the head top
+	vector<BodyJointEnum> targetJointIdxVect;
+	for(int i=0;i<m_skeletonHierarchy.size();++i)
+	{
+		targetJointIdxVect.push_back(m_skeletonHierarchy[i]->jointName);	
+	}	
+	g_clock.tic();
+	//////////////////////////////////////////////////////////////////////////
+	/// For each target joint,
+	// 1. Probability volume Reconstruction (saved to m_nodePropScoreVector.back())
+	// 2. Joint candidate after NMS and thresholding (saved to JointReconVector)
+	CVisualHullManager* detectionHullManager =  new CVisualHullManager();
+	m_nodePropScoreVector.push_back(detectionHullManager);		//push a CVisualHullManager which is describing current frames prob volumes
+	detectionHullManager->m_imgFramdIdx =  domeImageManager.GetFrameIdx(); 
+	detectionHullManager->m_visualHullRecon.resize(targetJointIdxVect.size()); //contains each joint's visual hull recon
+	int jointNum = targetJointIdxVect.size();
+	bool bCudaSuccessAll=true;
+	//#pragma omp parallel for num_threads(10)
+	#pragma omp parallel for
+	for(int jj=0;jj<targetJointIdxVect.size();++jj)
+	{
+		BodyJointEnum targetJointIdx = targetJointIdxVect[jj];
+		int targetJointFliipped = -1;
+
+		vector<Mat_<float> > costMapVect;		//changed to float
+		vector<Mat_<float> > projectMatVect;
+		vector<Point3f> camCenterVect;
+		projectMatVect.resize(detectedPoseVect.size());
+		assert(cameraNum==detectedPoseVect.size());
+		//////////////////////////////////////////////////////////////////////////
+		/// Generate Cost Map for each detected 2D pose
+		for(int camIdx=0;camIdx<detectedPoseVect.size();++camIdx)
+		{
+			pair< int, int> imageSize = domeImageManager.GetImageSize(camIdx);		//x, y
+			Mat_<float> costMap = Mat_<float>::zeros(imageSize.second,imageSize.first);	//row, column
+			for(int j=0;j<detectedPoseVect[camIdx].size();++j)
+			{
+				if(targetJointIdx==Joint_bodyCenter)
+				{
+					Point2f bodyCenter = detectedPoseVect[camIdx][j].bodyJoints[OP_JOINT_LHip] + detectedPoseVect[camIdx][j].bodyJoints[OP_JOINT_RHip];
+					bodyCenter = bodyCenter*0.5;
+
+					double score = detectedPoseVect[camIdx][j].bodyJointScores[OP_JOINT_LHip] + detectedPoseVect[camIdx][j].bodyJointScores[OP_JOINT_RHip];
+					score =  score*0.5;
+					PutGaussianKernel( costMap,bodyCenter,gaussianBandwidth,score);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				else
+				{
+					OpenPose25JointEnum targetJointIdx_OpenPose = m_map_devaToOpenPoseIdx[targetJointIdx];
+					if(targetJointIdx_OpenPose != OP_JOINT_Unknown)
+					{
+						double score = detectedPoseVect[camIdx][j].bodyJointScores[targetJointIdx_OpenPose];
+						PutGaussianKernel( costMap,detectedPoseVect[camIdx][j].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,score);//detectedFaceVect[camIdx][j].detectionScore);
+					}
+				}
+			}
+			
+			costMapVect.push_back(costMap);
+			domeImageManager.m_domeViews[camIdx]->m_P.convertTo(projectMatVect[camIdx],CV_32F);
+			Point3f c = MatToPoint3d(domeImageManager.m_domeViews[camIdx]->m_CamCenter);
+			camCenterVect.push_back(c);
+		}
+
+		if(bSaveCostMap)
+		{
+			for(int camIdx=0;camIdx<detectedPoseVect.size();++camIdx)
+			{
+				//	Save Cost map to images
+				if(domeImageManager.m_domeViews[camIdx]->m_actualPanelIdx==14 && domeImageManager.m_domeViews[camIdx]->m_actualCamIdx==7)
+				//if(domeImageManager.m_domeViews[camIdx]->m_actualCamIdx==4)
+				{
+					char fileName[128];
+					sprintf(fileName,"c:/tempResult/poseCostMap/poseCostMap_p%d_c%d_f%d_j%d.txt",domeImageManager.m_domeViews[camIdx]->m_actualPanelIdx
+						,domeImageManager.m_domeViews[camIdx]->m_actualCamIdx,domeImageManager.GetFrameIdx(),jj);
+					ofstream fout(fileName,ios_base::trunc);
+					for(int c=0;c<costMapVect[camIdx].cols;++c)
+						for(int r=0;r<costMapVect[camIdx].rows;++r)
+						{
+							if(costMapVect[camIdx](r,c)>0)
+							{
+								fout << r <<" " <<c <<" "<<costMapVect[camIdx](r,c)<<"\n";
+							}
+						}
+				
+					fout.close();
+					//imwrite(fileName,costMap);
+				}
+				/*if(domeImageManager.m_domeViews[camIdx]->m_actualPanelIdx==10 && domeImageManager.m_domeViews[camIdx]->m_actualCamIdx==4)
+				{
+					imshow("test",costMap);
+					cvWaitKey(0);
+				}*/
+			}
+		}
+
+		//////////////////////////////////////////////////////////////////////////
+		/// Cost Volume Generation
+		CVisualHull& tempVisualHull = detectionHullManager->m_visualHullRecon[jj];
+		tempVisualHull.SetParameters(xMin,xMax,yMin,yMax,zMin,zMax,voxelSize);
+		tempVisualHull.AllocMemory();		//needed to transform between vIdx to pos and vice verca (we don't need mem allocation but..I was too lazy)
+		tempVisualHull.m_actualFrameIdx = domeImageManager.GetFrameIdx();			//same as detectionHullManager.m_imageFrameIdx
+		//printfLog("Voxel Num %d\n",tempVisualHull.GetVoxelNum());
+		//g_clock.tic();
+		int voxelNum = tempVisualHull.GetVoxelNum();
+		//printfLog("Raw Voxel Number : %d\n",voxelNum);
+		float* voxelCoordVect = new float[voxelNum*3];
+		//#pragma omp parallel for
+		for(int voxelIdx=0;voxelIdx<voxelNum;++voxelIdx)
+		{
+			Point3f tempCoord = tempVisualHull.GetVoxelPos(voxelIdx) ;
+			voxelCoordVect[3*voxelIdx ] = tempCoord.x;
+			voxelCoordVect[3*voxelIdx +1] = tempCoord.y;
+			voxelCoordVect[3*voxelIdx +2] = tempCoord.z;
+		}
+		//g_clock.toc("voxelCoordVect generation");
+		float* occupancyOutput = new float[voxelNum];
+		memset(occupancyOutput,0,voxelNum*sizeof(float));
+		//DetectionCostVolumeGenerationWithOrientation_GPU(voxelCoordVect, voxelNum, costMapVect,projectMatVect,camCenterVect,occupancyOutput);
+		//DetectionCostVolumeGeneration_float_GPU_vga(voxelCoordVect, voxelNum, costMapVect,projectMatVect,occupancyOutput);
+		bool bCudaSuccess;
+		if(isHD ==false)
+			bCudaSuccess = DetectionCostVolumeGeneration_float_GPU_average_vga(voxelCoordVect, voxelNum, costMapVect,projectMatVect,occupancyOutput);
+		else
+			bCudaSuccess = DetectionCostVolumeGeneration_float_GPU_average_hd(voxelCoordVect, voxelNum, costMapVect,projectMatVect,occupancyOutput);
+		if(bCudaSuccess==false)
+			bCudaSuccessAll = false;
+
+		//////////////////////////////////////////////////////////////////////////
+		//Non-Maximum suppression
+		vector<int> nonMaxVoxIdx;		//keep the index of local max voxels
+		int bandwidth =3;
+		for(int voxelIdx=0;voxelIdx<voxelNum;++voxelIdx)
+		{
+			if(occupancyOutput[voxelIdx]>0)
+			{
+				float currentProb = occupancyOutput[voxelIdx];
+				vector<int> neighVoxIdx;
+				tempVisualHull.GetNeighborVoxIdx(voxelIdx,neighVoxIdx,1);
+				bool bLocalMax = true;
+				for(int i=0;i<neighVoxIdx.size();++i)
+				{
+					if(currentProb<  occupancyOutput[neighVoxIdx[i]])
+					{
+						bLocalMax = false;
+						break;
+					}
+				}
+				if(bLocalMax)
+					nonMaxVoxIdx.push_back(voxelIdx);
+			}
+		}
+
+		//Non Max Suppression and face pose estimation
+		float sphereSize_CM = 30.0;
+		float MAGIC_OFFSET = 1000;		//added to flag valid voxels (subtracted again after all others are eliminated)
+		int sphereSize = (sphereSize_CM/VOXEL_SIZE_CM);
+		for(int i=0;i<nonMaxVoxIdx.size();++i)
+		{
+			int voxelIdx = nonMaxVoxIdx[i];
+			vector<int> neighVoxIdx;
+			if(occupancyOutput[voxelIdx] <MAGIC_OFFSET)
+				occupancyOutput[voxelIdx] +=MAGIC_OFFSET;
+		/*	// Add cube like neighborhoods	
+			tempVisualHull.GetNeighborVoxIdx(voxelIdx,neighVoxIdx,sphereSize);
+			for(int j=0;j<neighVoxIdx.size();++j)
+			{
+				if(occupancyOutput[neighVoxIdx[j]]<MAGIC_OFFSET)		//To avoid duplicated addition
+					occupancyOutput[neighVoxIdx[j]] +=MAGIC_OFFSET;
+			}*/
+		}
+		//Eliminate outliers
+		for(int voxelIdx=0;voxelIdx<voxelNum;++voxelIdx)
+		{
+			if(occupancyOutput[voxelIdx]<MAGIC_OFFSET)
+				occupancyOutput[voxelIdx] =0;
+			else
+				occupancyOutput[voxelIdx] -=MAGIC_OFFSET;
+		}
+
+		//////////////////////////////////////////////////////////////////////////
+		//Save volumeRecon as surfaceVoxels for visualization
+		tempVisualHull.m_surfaceVoxelOriginal.clear();
+		double minCost=1e5;
+		double maxCost=-1e5;
+		for(int voxelIdx=0;voxelIdx<voxelNum;++voxelIdx)
+		{
+			if(occupancyOutput[voxelIdx] >POSEMACHINE_NODESCORE_THRESHOLD_AVG)
+			{
+				//printf("%.2f     ",occupancyOutput[voxelIdx]);
+				Point3f voxPos = tempVisualHull.GetVoxelPos(voxelIdx);
+				int colorIdx = occupancyOutput[voxelIdx]*255;
+				Point3f voxColor(1.0f, 1.0f, 1.0f);  // Donglai's comment: no need for visualization, put random color here.!
+				tempVisualHull.m_surfaceVoxelOriginal.push_back( SurfVoxelUnit(voxPos,voxColor));
+				tempVisualHull.m_surfaceVoxelOriginal.back().voxelIdx = voxelIdx;
+				tempVisualHull.m_surfaceVoxelOriginal.back().prob = occupancyOutput[voxelIdx];
+
+				if(minCost >occupancyOutput[voxelIdx])
+					minCost =occupancyOutput[voxelIdx];
+				if(maxCost <occupancyOutput[voxelIdx])
+					maxCost =occupancyOutput[voxelIdx];
+			}
+		}
+		printfLog("jj: %d: Final Voxel Number : %d:: minCost %f, maxCost %f\n",jj,tempVisualHull.m_surfaceVoxelOriginal.size(),minCost,maxCost);
+
+		//printfLog("Final Voxel Number : %d\n",tempVisualHull.m_surfaceVoxelOriginal.size());
+		tempVisualHull.deleteMemory();	//Volume is no longer needed
+		delete[] voxelCoordVect;
+		delete[] occupancyOutput;
+		//printfLog("minCost %f, maxCost %f\n",minCost,maxCost);
+	}//end of for(int j=0;j<targetJointIdx.size();++j)
+	g_clock.toc("Node Proposal Generation");
+	if(bCudaSuccessAll==false)
+		return;
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Part Proposal generation
+	g_clock.tic();
+	gaussianBandwidth = gaussianBandwidth*0.5;
+	//////////////////////////////////////////////////////////////////////////
+	/// Set 2D group Map: Left (100) - right (200) 
+	vector< vector< Mat_<Vec3b> > > costMap;   //costMap[camIdx][jointIdx]
+	costMap.resize(detectedPoseVect.size());
+	for(int c=0;c<costMap.size();++c)
+	{
+		costMap[c].resize(modelJointNum);
+		Mat& inputImage = domeImageManager.m_domeViews[c]->m_inputImage;
+		for(int j=0;j<costMap[c].size();++j)
+		{
+			costMap[c][j] = Mat_<Vec3b>::zeros(inputImage.rows,inputImage.cols);
+		}
+	}
+
+	int LEFT = 100;
+	int RIGHT = 200;
+	int MAGIC_NUM = 100;		//I need this to distinguish jointRegions from background
+	#pragma omp parallel for //num_threads(10)
+	for(int camIdx=0;camIdx<detectedPoseVect.size();++camIdx)
+	{
+		//Mat& inputImage = domeImageManager.m_domeViews[camIdx]->m_inputImage;
+		//costMap[camIdx] = Mat_<Vec3b>::zeros(inputImage.rows,inputImage.cols);
+
+		for(int h=0;h<detectedPoseVect[camIdx].size();++h)	//for h is the index for each person in camera of the camIdx 
+		{
+			for(int jj=0;jj<targetJointIdxVect.size();++jj)		//jj is my joint index
+			{
+				BodyJointEnum targetJointIdx = targetJointIdxVect[jj];
+				OpenPose25JointEnum targetJointIdx_OpenPose = m_map_devaToOpenPoseIdx[targetJointIdx];
+					
+				if(targetJointIdx>=JOINT_lShoulder && targetJointIdx<=JOINT_lFoot)
+				{
+					Scalar tempColor(jj + MAGIC_NUM, h,LEFT);				//(jointIDx, humanIdx, LEFT RIGHT flag)
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+					//circle( costMap[camIdx],detectedPoseVect[camIdx][j].bodyJoints[targetJointIdxByDeva],gaussianBandwidth,100+jj,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				else if(targetJointIdx>=JOINT_rShoulder && targetJointIdx<=JOINT_rFoot)
+				{
+					//int mirroredIdx = jj - (jointNum-3)/2;			//I forgot this.. what a "huge" bug....
+					//Scalar tempColor(mirroredIdx + MAGIC_NUM, h,RIGHT);
+					Scalar tempColor(jj + MAGIC_NUM, h,RIGHT);
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+					//circle( costMap[camIdx],detectedPoseVect[camIdx][j].bodyJoints[targetJointIdxByDeva],gaussianBandwidth,200+mirroredIdx,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				else if(targetJointIdx==JOINT_headTop || targetJointIdx==JOINT_neck 
+					|| targetJointIdx==Joint_bodyCenter || targetJointIdx==JOINT_realheadtop)  // body center is added by Donglai due to new OpenPose
+				{
+					Scalar tempColor(jj + MAGIC_NUM, h,LEFT);
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+					//circle( costMap[camIdx],detectedPoseVect[camIdx][j].bodyJoints[targetJointIdxByDeva],gaussianBandwidth,100+jj,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				//Coco additional
+				else if(targetJointIdx==JOINT_lEye || targetJointIdx==JOINT_lEar)
+				{
+					Scalar tempColor(jj + MAGIC_NUM, h,LEFT);
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+					//circle( costMap[camIdx],detectedPoseVect[camIdx][j].bodyJoints[targetJointIdxByDeva],gaussianBandwidth,100+jj,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				else if(targetJointIdx==JOINT_rEye || targetJointIdx==JOINT_rEar)
+				{
+					Scalar tempColor(jj + MAGIC_NUM, h,RIGHT);
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+					//circle( costMap[camIdx],detectedPoseVect[camIdx][j].bodyJoints[targetJointIdxByDeva],gaussianBandwidth,100+jj,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				// foot
+				else if(targetJointIdx >= JOINT_lBigToe && targetJointIdx <= JOINT_lHeel)
+				{
+					Scalar tempColor(jj + MAGIC_NUM, h,LEFT);
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				else if(targetJointIdx >= JOINT_rBigToe && targetJointIdx <= JOINT_rHeel)
+				{
+					Scalar tempColor(jj + MAGIC_NUM, h,RIGHT);
+					circle( costMap[camIdx][jj],detectedPoseVect[camIdx][h].bodyJoints[targetJointIdx_OpenPose],gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+				}
+				//if(domeImageManager.m_domeViews[camIdx]->m_actualPanelIdx==0 && domeImageManager.m_domeViews[camIdx]->m_actualCamIdx==21)
+			/*	{
+					imshow("test",costMap[camIdx][jj]);
+					cvWaitKey();
+				}*/
+			}
+			Point2f bodyCenter = detectedPoseVect[camIdx][h].bodyJoints[OP_JOINT_LHip] + detectedPoseVect[camIdx][h].bodyJoints[OP_JOINT_RHip];
+			bodyCenter = bodyCenter*0.5;
+			int bodyCenterJointidxInVector = 2;			//index in targetJointIdxVect
+			Scalar tempColor(bodyCenterJointidxInVector+ MAGIC_NUM, h,LEFT);
+			circle( costMap[camIdx][SMC_BodyJoint_bodyCenter],bodyCenter,gaussianBandwidth,tempColor,-1);//detectedFaceVect[camIdx][j].detectionScore);
+		}
+		/*//Debug
+		if(true)//domeImageManager.m_domeViews[camIdx]->m_actualPanelIdx==0 && domeImageManager.m_domeViews[camIdx]->m_actualCamIdx==1)
+		{
+			imshow("test",costMap[camIdx]);
+			cvWaitKey();
+		}*/
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Part Proposal generation
+	//0 1 2 // 3 4 5   6 7 8 // 9 10 11   12 13 14 
+	int iterEnd = m_skeletonHierarchy.size();
+	int iterStart = 1;		//start from head top. This value was 3 before, where I didn't consider head and body
+	//if(bDoJointMirroring)
+		//iterEnd = 3+(m_skeletonHierarchy.size()-3)/2;
+	float increasingpStepUnit = 1.0/detectedPoseVect.size(); 
+	#pragma omp parallel for
+	for(int jointIdx=iterStart;jointIdx<iterEnd;++jointIdx)	
+	{
+		if(m_skeletonHierarchy[jointIdx]->parents.size()==0)
+			continue;
+		//if(m_skeletonHierarchy[jointIdx]->jointName==JOINT_headTop || m_skeletonHierarchy[jointIdx]->jointName==Joint_bodyCenter)
+//			continue;
+		STreeElement* childTreeNode = m_skeletonHierarchy[jointIdx];
+		assert(m_skeletonHierarchy[jointIdx]->parents.size()==1);
+		STreeElement* parentTreeNode = m_skeletonHierarchy[jointIdx]->parents.front();		//WARNING!!! I am assuming single child mode
+		int parentJointidx = parentTreeNode->idxInTree;
+		vector< SurfVoxelUnit >& surfVoxChild = detectionHullManager->m_visualHullRecon[jointIdx].m_surfaceVoxelOriginal;
+		vector< SurfVoxelUnit >& surfVoxParent  = detectionHullManager->m_visualHullRecon[parentTreeNode->idxInTree].m_surfaceVoxelOriginal;
+
+		//printf("Edge generation: childJoint %d, parentJoint %d\n",jointIdx,parentJointidx);
+
+		//initialize edge strength vectors
+		childTreeNode->childParent_partScore.clear();			//should throw away previous data
+		childTreeNode->childParent_counter.clear();			//should throw away previous data
+
+		childTreeNode->childParent_partScore.resize(surfVoxChild.size());
+		childTreeNode->childParent_counter.resize(surfVoxChild.size());
+		for(int c=0;c<surfVoxChild.size();++c)
+		{
+			childTreeNode->childParent_partScore[c].resize(surfVoxParent.size(),0);
+			childTreeNode->childParent_counter[c].resize(surfVoxParent.size(),0);
+		}
+
+		//For every possible pair between current joint's node and parent's node
+		for(int c=0;c<surfVoxChild.size();++c)
+		{
+			for(int camIdx=0;camIdx<detectedPoseVect.size();++camIdx)
+			{
+				Point2d childImgPt = Project3DPt(surfVoxChild[c].pos, domeImageManager.m_domeViews[camIdx]->m_P);
+				if(IsOutofBoundary(costMap[camIdx][jointIdx],childImgPt.x,childImgPt.y))
+					continue;
+
+				Vec3b childLabel = costMap[camIdx][jointIdx].at<Vec3b>(childImgPt.y,childImgPt.x);
+				if(childLabel[0]-MAGIC_NUM != jointIdx)		//not for this joint
+					continue;
+				int childWhichSideLabel =childLabel[2];		//either 100 or 200
+				
+				for(int p=0;p<surfVoxParent.size();++p)
+				{
+					float edgeDist = Distance(surfVoxChild[c].pos,surfVoxParent[p].pos);
+					float expected = childTreeNode->parent_jointLength.front();
+					if(abs(expected-edgeDist)>expected)		//reject if the length is too long or short
+						continue;
+
+					double weightByNodes = (surfVoxChild[c].prob + surfVoxParent[p].prob)/2.0;
+					Point2d parentImgPt = Project3DPt(surfVoxParent[p].pos, domeImageManager.m_domeViews[camIdx]->m_P);
+					if(IsOutofBoundary(costMap[camIdx][parentJointidx],parentImgPt.x,parentImgPt.y))
+						continue;
+
+					Vec3b parentLabel = costMap[camIdx][parentJointidx].at<Vec3b>(parentImgPt.y,parentImgPt.x);
+					//if(parentLabel<100)
+					if(parentLabel[0]-MAGIC_NUM != parentJointidx)		//not for this joint
+						continue;
+					int parentWhichSideLabel = parentLabel[2];		//either 100 or 200
+
+					childTreeNode->childParent_counter[c][p] +=1;		//for taking average.. consider the view whenever the part is inside of image. I put this here so that the "non-detected" view provided kind of "negative" voting
+
+					//if the parent is either neck or bodyCenter, side label doesn't matter. Only human label is important
+					//For ms coco, if parent if head top (actually nose), side doesn't matter (left/right eye) 
+					// (According to Han's comment, should not matter in modern pose detectors. --Donglai)
+					if(jointIdx==SMC_BodyJoint_lShoulder || jointIdx==SMC_BodyJoint_lHip || jointIdx==SMC_BodyJoint_rShoulder || jointIdx==SMC_BodyJoint_rHip 
+									|| jointIdx==SMC_BodyJoint_lEye || jointIdx==SMC_BodyJoint_rEye)			//bug fixed Neck and Bodycenter has label 100 which was never connected with 200 (right Shoulder and Hip)
+					{
+						if(childLabel[1] == parentLabel[1])		//human label check
+						{
+							//childTreeNode->childParent_partScore[c][p] = childTreeNode->childParent_partScore[c][p] + weightByNodes*increasingpStepUnit;		//max value become 1
+							childTreeNode->childParent_partScore[c][p] = childTreeNode->childParent_partScore[c][p] + weightByNodes;		//sum
+						}
+					}
+					else if(childWhichSideLabel == parentWhichSideLabel && childLabel[1] == parentLabel[1]) // childLabel[1]  and parentLabel[1] means human index
+					{
+						//childTreeNode->childParent_partScore[c][p] = childTreeNode->childParent_partScore[c][p] + weightByNodes*increasingpStepUnit;		//max value become 1
+						childTreeNode->childParent_partScore[c][p] = childTreeNode->childParent_partScore[c][p] + weightByNodes;	//sum
+					//	childTreeNode->childParent_counter[c][p] +=1;	//for taking average
+					}
+				}
+			}
+
+			//Taking average
+			for(int p=0;p<surfVoxParent.size();++p)
+			{
+				if(childTreeNode->childParent_counter[c][p]>0)
+					childTreeNode->childParent_partScore[c][p] /=childTreeNode->childParent_counter[c][p];
+			}
+		}
+	}
+
+	/*if(bDoJointMirroring)
+	{
+		for(int jointIdx=iterEnd;jointIdx<m_skeletonHierarchy.size();++jointIdx)
+		{
+			int mirrorJoint = jointIdx - (jointNum-3)/2;
+			printf("Edge generation: joint %d - mirrored by %d\n",jointIdx,mirrorJoint);
+
+			STreeElement* childTreeNode = m_skeletonHierarchy[jointIdx];
+			STreeElement* mirrorNode = m_skeletonHierarchy[mirrorJoint];
+
+			childTreeNode->childParent_partScore.resize(mirrorNode->childParent_partScore.size());
+			for(int c=0;c<childTreeNode->childParent_partScore.size();++c)
+				childTreeNode->childParent_partScore[c].reserve(mirrorNode->childParent_partScore[c].size());
+
+			for(int c=0;c<mirrorNode->childParent_partScore.size();++c)
+			{
+				childTreeNode->childParent_partScore[c] = mirrorNode->childParent_partScore[c];
+			}
+		}
+	}*/
+	g_clock.toc("Part Proposal Generation\n");
+
+	//Save the edge result to m_edgeCostVector for visualization
+	//Todo: only use m_edgeCostVector to avoid copy. (Not the one in the  m_skeleton
+	SEdgeCostVector* pEdgeCostUnit = new SEdgeCostVector();
+	m_edgeCostVector.push_back(pEdgeCostUnit);
+	pEdgeCostUnit->parent_connectivity_vis.resize(m_skeletonHierarchy.size());
+	for(int jointIdx=0;jointIdx<m_skeletonHierarchy.size();++jointIdx)	
+	{
+		pEdgeCostUnit->parent_connectivity_vis[jointIdx] = m_skeletonHierarchy[jointIdx]->childParent_partScore;
+	}
+
+	printf("done\n");
+
+	g_clock.tic();
+	SaveNodePartProposalsOP25(dataMainFolder,g_askedVGACamNum,domeImageManager.GetFrameIdx(),detectionHullManager,m_skeletonHierarchy,validCamIdxVect.size(),isHD);
+	g_clock.toc("SaveNodePartProposals");
+}
+
 //Node proposal: saved in pDetectHull
 //Part proposal: saved in skeletonHierarchy
 void CBodyPoseRecon::SaveNodePartProposals(const char* dataMainFolder,const int cameraNum,int frameIdx,const CVisualHullManager* pDetectHull,const vector<STreeElement*>& skeletonHierarchy,int actualValidCamNum,bool isHD)
@@ -963,6 +1495,123 @@ void CBodyPoseRecon::SaveNodePartProposals(const char* dataMainFolder,const int 
 			//fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].color.x,sizeof(float));
 			//fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].color.y,sizeof(float));
 			//fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].color.z,sizeof(float));
+
+			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].prob,sizeof(float));
+			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].voxelIdx,sizeof(int));
+		}
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	/// Save Part Proposal Information
+	char magicCharacter='e';		//there exist edge information
+	fout.write(&magicCharacter,sizeof(char));
+	int jointNum = skeletonHierarchy.size();
+	fout.write((char*)&jointNum,sizeof(int));
+	for(int j=0;j<skeletonHierarchy.size();++j)
+	{
+		int childNum=0,parentNum=0;
+		if(skeletonHierarchy[j]->childParent_partScore.size()==0)
+		{
+			fout.write((char*)&childNum,sizeof(int));
+			fout.write((char*)&parentNum,sizeof(int));
+			continue;
+		}
+		else
+		{
+			childNum = skeletonHierarchy[j]->childParent_partScore.size();
+			parentNum = skeletonHierarchy[j]->childParent_partScore.front().size();
+			fout.write((char*)&childNum,sizeof(int));
+			fout.write((char*)&parentNum,sizeof(int));
+		}
+		vector<int> cVector;	//to save these at once to the disk
+		vector<int> fVector;
+		vector<float> edgeVector;
+		cVector.reserve(childNum*parentNum);
+		fVector.reserve(childNum*parentNum);
+		edgeVector.reserve(childNum*parentNum);
+		for(int c=0;c<skeletonHierarchy[j]->childParent_partScore.size();++c)
+		{
+			for(int f=0;f<skeletonHierarchy[j]->childParent_partScore[c].size();++f)
+			{
+				if(skeletonHierarchy[j]->childParent_partScore[c][f]>0)
+				{
+					cVector.push_back(c);
+					fVector.push_back(f);
+					edgeVector.push_back(skeletonHierarchy[j]->childParent_partScore[c][f]);
+				}
+//				printf("Save: %f\n",skeletonHierarchy[j]->childParent_partScore[c][f]);
+			}
+		}
+		int cnt= cVector.size();
+		fout.write((char*)&cnt,sizeof(int));	//number of will-be saved value
+
+		fout.write((char*)cVector.data(),sizeof(int)*cnt);		//index 1
+		fout.write((char*)fVector.data(),sizeof(int)*cnt);		//index 2
+		fout.write((char*)edgeVector.data(),sizeof(float)*cnt);		//value
+	}
+	fout.close();
+}
+
+void CBodyPoseRecon::SaveNodePartProposalsOP25(const char* dataMainFolder,const int cameraNum,int frameIdx,const CVisualHullManager* pDetectHull,const vector<STreeElement*>& skeletonHierarchy,int actualValidCamNum,bool isHD)
+{
+	char outputFileFolder[512];
+	if(isHD==false)
+		sprintf(outputFileFolder,"%s/op25_bodyNodeProposal",dataMainFolder);
+	else
+		sprintf(outputFileFolder,"%s/op25_bodyNodeProposal_hd",dataMainFolder);
+	
+	CreateFolder(outputFileFolder);
+	sprintf(outputFileFolder,"%s/%04d",outputFileFolder,cameraNum);
+	CreateFolder(outputFileFolder);
+
+	char outputFileName[512];
+	if(isHD==false)
+		sprintf(outputFileName,"%s/nodePartProposals_%08d.txt",outputFileFolder,frameIdx);
+	else
+		sprintf(outputFileName,"%s/nodePartProposals_hd%08d.txt",outputFileFolder,frameIdx);
+	printfLog("## Save NodePartProposals: %s\n",outputFileName);
+
+	ofstream fout(outputFileName, ios::out | ios::binary);
+	
+	int versionMagic = -98;   //added this to distinguish weighted part version	//-99:weightedversion (/480), -98: weightedversion2 (/cnt)
+	fout.write((char*)&versionMagic,sizeof(int));
+	//float version = 0.1;
+	float version = 0.5;		//added actually valid number of cameras
+	fout.write((char*)&version,sizeof(float));
+
+	int dataInt;
+	if(actualValidCamNum<0)
+	{
+		dataInt =cameraNum;
+		fout.write((char*)&dataInt,sizeof(int));
+	}
+	else
+	{
+		dataInt = actualValidCamNum;
+		fout.write((char*)&dataInt,sizeof(int));
+	}
+
+	dataInt = pDetectHull->m_visualHullRecon.size();
+	fout.write((char*)&dataInt,sizeof(int));
+
+	for(int v=0;v<pDetectHull->m_visualHullRecon.size();++v)
+	{
+		const CVisualHull& tempVisualHull = pDetectHull->m_visualHullRecon[v]; 
+
+		float dataFloat[7];
+		tempVisualHull.GetParameters(dataFloat[0],dataFloat[1],dataFloat[2],dataFloat[3],dataFloat[4],dataFloat[5],dataFloat[6]);
+		fout.write((char*)dataFloat,sizeof(float)*7);
+
+		int dataInt =tempVisualHull.m_surfaceVoxelOriginal.size();
+		//printf("size %d\n",dataInt);
+		fout.write((char*)&dataInt,sizeof(int));
+
+		for(int i=0;i<tempVisualHull.m_surfaceVoxelOriginal.size();++i)
+		{
+	
+			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].pos.x,sizeof(float));
+			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].pos.y,sizeof(float));
+			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].pos.z,sizeof(float));
 
 			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].prob,sizeof(float));
 			fout.write((char*)&tempVisualHull.m_surfaceVoxelOriginal[i].voxelIdx,sizeof(int));
@@ -2880,6 +3529,251 @@ void CBodyPoseRecon::Optimization3DPS_fromDetection_oneToOne_coco19(const char* 
 					if(changeDiff<0.05)
 					{
 						//printf("iterNum: %d: finalChangeDiff: %f, finalError: %f\n",10-iter,changeDiff,afterError);
+						break;
+					}
+					beforeError = afterError;
+				} 
+				bodySkeletonVect[h].m_jointPosVect[j] = MatToPoint3d(X);
+				//printf("ReprojectionErrorChange: %f\n",change);
+			}
+			if(bodySkeletonVect[h].m_jointConfidenceVect[SMC_BodyJoint_lHip] >=0 && bodySkeletonVect[h].m_jointConfidenceVect[SMC_BodyJoint_rHip] >=0)
+				bodySkeletonVect[h].m_jointPosVect[SMC_BodyJoint_bodyCenter] = 0.5 * ( bodySkeletonVect[h].m_jointPosVect[SMC_BodyJoint_lHip] + bodySkeletonVect[h].m_jointPosVect[SMC_BodyJoint_rHip] );
+		}
+	}
+}
+
+//Valid only for poseDetectFolder
+void CBodyPoseRecon::Optimization3DPS_fromDetection_oneToOne_op25(const char* dataMainFolder,const char* calibFolder,const int askedCamNum,bool isHD)//optimize poseReconMem.m_poseAtEachFrame
+{
+	int modelJointNum;
+	char poseDetectFolderName[512];
+
+	modelJointNum= MODEL_JOINT_NUM_OP_25;
+	sprintf(poseDetectFolderName,"op25_poseDetect_pm");
+
+	printf("Start: Optimization3DPS_fromDetection\n");
+	//double gaussianBandwidth = 20;
+	double gaussianBandwidth = 10;
+	//if(isHD)
+	//gaussianBandwidth *=2;
+
+	//To compute working volume, we should load full dome
+	CDomeImageManager fullDome;
+	fullDome.InitDomeCamOnlyByExtrinsic(calibFolder);
+	fullDome.CalcWorldScaleParameters();
+	fullDome.DeleteMemory();
+
+	//Parameter setting
+	CDomeImageManager domeImageManager;
+	domeImageManager.SetCalibFolderPath(calibFolder);
+	if(isHD==false)
+		domeImageManager.InitDomeCamVgaHd(askedCamNum,false);
+	else
+		domeImageManager.InitDomeCamVgaHdKinect(0,CDomeImageManager::LOAD_SENSORS_HD);
+	//domeImageManager.SetFrameIdx(frameIdx);		//Don't need
+
+	vector<int> jointToDetectIdxMap;
+	//vector<int> smc2posemachineIdx;			//This is a bug. 
+	//smc2posemachineIdx.resize(MODEL_JOINT_NUM_COCO_19);
+	for(int i=0;i<m_skeletonHierarchy.size();++i)
+	{
+		jointToDetectIdxMap.push_back(m_map_devaToOpenPoseIdx[m_skeletonHierarchy[i]->jointName]);		//targetJointIdxVect[ourIdx]==DetectionFile's index. 
+	//	smc2posemachineIdx[jointToDetectIdxMap.back()] = i;   //This is a bug.
+	}
+
+	//For each time instance
+	for(int t=0;t<m_3DPSPoseMemVector.size();++t)
+	{
+		int frameIdx = m_3DPSPoseMemVector[t].m_imgFramdIdx;
+		vector<CBody3D>& bodySkeletonVect = m_3DPSPoseMemVector[t].m_articBodyAtEachTime;
+
+		printf("## Processing %d\n",frameIdx);
+
+		/// Load detected 2d pose. Outer vector is for each image, and inner vector is for each instance (person)
+		vector< vector<SPose2D> > detectedPoseVect;		
+		char poseDetectFolder[128];
+		if(isHD==false)
+			sprintf(poseDetectFolder,"%s/%s/vga_25",dataMainFolder,poseDetectFolderName);
+		else
+			sprintf(poseDetectFolder,"%s/%s/hd_30",dataMainFolder,poseDetectFolderName);
+		printf("Loading posedetection result.....\n");
+		vector<int> validCamIdxVect;
+		bool isLoadDetect =  Module_BodyPose::LoadPoseDetectMultipleCamResult_PoseMachine(poseDetectFolder,frameIdx,domeImageManager.m_domeViews,detectedPoseVect,validCamIdxVect,isHD);
+		if(isLoadDetect==false)
+		{
+			printf("## Error: Cannot load pose detection results. \n");
+			continue;
+		}
+		else
+			printf("## PoseDetect result has been successfully loaded \n");
+		if(detectedPoseVect.size() != domeImageManager.m_domeViews.size())
+		{
+			printf("## ERROR: Optimization3DPS_fromDetection:: detectedPoseVect.size() != domeImageManager.m_domeViews.size()\n");
+			return;
+		}
+
+		//Find 1-1 correspondence between 3D point and 2D point
+		vector< vector< vector< pair<int, float> > > > detectedPoseVect_corrsHuman;		//finding corresponding humna index for each detected 2d joint/
+		// each image/ each 2d skeleton / each joint(joint idx is our SMC index)
+		//<int,float> ==>(humanIdx, detectionScore)
+		detectedPoseVect_corrsHuman.resize(detectedPoseVect.size());
+		for(int i=0;i<detectedPoseVect_corrsHuman.size();++i)
+		{
+			detectedPoseVect_corrsHuman[i].resize(detectedPoseVect[i].size());		//initialize as -1
+			for(int h2d=0;h2d<detectedPoseVect_corrsHuman[i].size();++h2d)
+			{
+				detectedPoseVect_corrsHuman[i][h2d].resize(modelJointNum, make_pair(-1,-1.0f));
+			}
+		}
+		//For each human finding correspondence candidate and claim that they are mine if its value is larter 
+		for(int h=0;h<bodySkeletonVect.size();++h)
+		{
+			for(int j=0; j<bodySkeletonVect[h].m_jointPosVect.size();++j)
+			{
+				if(j==SMC_BodyJoint_bodyCenter)
+					continue;
+				if(bodySkeletonVect[h].m_jointConfidenceVect.size()>j && bodySkeletonVect[h].m_jointConfidenceVect[j]<0)
+					continue;;
+				//printf("Current confidence: %f\n",bodySkeletonVect[h].m_jointConfidenceVect[j]);
+
+				Point3d jointPt3d = bodySkeletonVect[h].m_jointPosVect[j];
+				int corresDetectIdx = jointToDetectIdxMap[j];			//find corresponding poseMachine joint idx
+				if(corresDetectIdx==OP_JOINT_Unknown)
+					continue;
+
+				for(int c=0;c<domeImageManager.m_domeViews.size();++c)
+				{
+					Point2d jointPt2d = domeImageManager.m_domeViews[c]->ProjectionPt(jointPt3d);
+					pair<int,int> imSize = domeImageManager.GetImageSize(c);
+					if(IsOutofBoundary(imSize.first,imSize.second,jointPt2d.x,jointPt2d.y))
+						continue;
+					double bestDist = 1e5;
+					double best3DNodeWeight;
+					int best2DPosIdx=-1;
+					for(int di=0;di<detectedPoseVect[c].size();++di)		//for each human detectedPoseVect[c][di]
+					{
+						double dist = Distance(jointPt2d, detectedPoseVect[c][di].bodyJoints[corresDetectIdx]);
+						if(dist<gaussianBandwidth && dist <bestDist)		//Threshold should consider gaussian variance. Also we can consider all joint to determine correspondence (if two people are close each other)
+						{
+							bestDist = dist;
+							best3DNodeWeight = bodySkeletonVect[h].m_jointConfidenceVect[j];
+							best2DPosIdx = di;
+						}
+					}
+					if(bestDist>1e4 || best2DPosIdx<0)
+						continue;
+
+					//Claim that this is mine
+					if(detectedPoseVect_corrsHuman[c][best2DPosIdx][j].first<0 || detectedPoseVect_corrsHuman[c][best2DPosIdx][j].second<best3DNodeWeight)
+						detectedPoseVect_corrsHuman[c][best2DPosIdx][j] = make_pair(h,best3DNodeWeight);
+				}
+			}
+		}
+
+		//Count the number of ownership
+		vector<CBody3D> bodySkeletonVect_refined;
+		bodySkeletonVect_refined.reserve(bodySkeletonVect.size());
+		vector<int> validHumanVector; 
+		for(int h=0;h<bodySkeletonVect.size();++h)
+		{
+			vector<int> ownershipNum(modelJointNum,0);
+			for(int j=0; j<bodySkeletonVect[h].m_jointPosVect.size();++j)
+			{
+				if(j==SMC_BodyJoint_bodyCenter)
+					continue;
+				//int posemachineJointIdx = smc2posemachineIdx[j];		//This is a bug. smc2posemachineIdx has garbages...
+				int posemachineJointIdx = jointToDetectIdxMap[j];
+				int cnt=0;
+				float aveDetectionScore=0;
+				for(int c=0;c<detectedPoseVect_corrsHuman.size();++c)
+				{
+					for(int h2d=0;h2d<detectedPoseVect_corrsHuman[c].size();++h2d)
+					{
+						if(detectedPoseVect_corrsHuman[c][h2d][j].first==h)
+						{
+							cnt++;
+							aveDetectionScore += detectedPoseVect[c][h2d].bodyJointScores[posemachineJointIdx];
+						}
+					}
+				}
+				if(cnt>0)
+					aveDetectionScore /= cnt;
+				printf("human %d: joint %d: cnt: %d, avg: %f\n",h,j,cnt,aveDetectionScore);
+				ownershipNum[j] = cnt;
+			}
+			if(ownershipNum[SMC_BodyJoint_headTop] <2 && ownershipNum[SMC_BodyJoint_neck] <2 )//|| ownershipNum[SMC_BodyJoint_neck]<2 )//|| ownershipNum[SMC_BodyJoint_lShoulder]<2 || ownershipNum[SMC_BodyJoint_rShoulder]<2)
+			{
+				printf("Rejected\n");
+				continue;
+			}
+			
+			printf("		Accepted\n");
+			bodySkeletonVect_refined.push_back(bodySkeletonVect[h]);
+		}
+		bodySkeletonVect = bodySkeletonVect_refined;		//save the filtered one
+		printf("Filtered human num: %d\n",bodySkeletonVect_refined.size());
+
+		//Optimization based on the corresponding 2D detection
+		#pragma omp parallel for
+		for(int h=0;h<bodySkeletonVect.size();++h)
+		{
+			for(int j=0; j<bodySkeletonVect[h].m_jointPosVect.size();++j)
+			{
+				if(j==SMC_BodyJoint_bodyCenter)
+					continue;
+				if(bodySkeletonVect[h].m_jointConfidenceVect.size()>j && bodySkeletonVect[h].m_jointConfidenceVect[j]<0)
+					continue;;
+				//printf("Current confidence: %f\n",bodySkeletonVect[h].m_jointConfidenceVect[j]);
+
+				Point3d jointPt3d = bodySkeletonVect[h].m_jointPosVect[j];
+				//int corresDetectIdx = jointToDetectIdxMap[j];
+				int corresDetectIdx = jointToDetectIdxMap[j];
+				if(corresDetectIdx==OP_JOINT_Unknown)
+					continue;
+
+				vector<Mat*> projecMatVect;
+				vector<Point2d> imagePtVect;
+				vector<double> weightVect;
+
+				for(int c=0;c<domeImageManager.m_domeViews.size();++c)
+				{
+					Point2d jointPt2d = domeImageManager.m_domeViews[c]->ProjectionPt(jointPt3d);
+					pair<int,int> imSize = domeImageManager.GetImageSize(c);
+					if(IsOutofBoundary(imSize.first,imSize.second,jointPt2d.x,jointPt2d.y))
+						continue;
+					double bestDist = 1e5;
+					Point2d bestPt2dCorres;
+					double bestWeight;
+					for(int di=0;di<detectedPoseVect[c].size();++di)		//for each human detectedPoseVect[c][di]
+					{
+						double dist = Distance(jointPt2d, detectedPoseVect[c][di].bodyJoints[corresDetectIdx]);
+						if(dist<gaussianBandwidth && dist <bestDist)		//Threshold should consider gaussian variance. Also we can consider all joint to determine correspondence (if two people are close each other)
+						{
+							bestDist = dist;
+							bestPt2dCorres = detectedPoseVect[c][di].bodyJoints[corresDetectIdx];
+							bestWeight = detectedPoseVect[c][di].bodyJointScores[corresDetectIdx];
+						}
+					}
+					if(bestDist>1e4)
+						continue;
+					projecMatVect.push_back(&domeImageManager.m_domeViews[c]->m_P);
+					weightVect.push_back(bestWeight);
+					imagePtVect.push_back(bestPt2dCorres);
+				}
+				if(projecMatVect.size()<3 )
+					continue;
+				Mat X;
+				Point3dToMat4by1(jointPt3d,X);
+				//double beforeError = CalcReprojectionError_weighted(projecMatVect,imagePtVect,weightVect,X);
+				double beforeError = CalcReprojectionError(projecMatVect,imagePtVect,X);
+				int iter = 5;
+				while((iter--)>0)
+				{
+					double changesqr = TriangulationOptimization(projecMatVect,imagePtVect,X);
+					double afterError = CalcReprojectionError(projecMatVect,imagePtVect,X);
+					double changeDiff = abs(afterError - beforeError);
+					if(changeDiff<0.05)
+					{
 						break;
 					}
 					beforeError = afterError;
