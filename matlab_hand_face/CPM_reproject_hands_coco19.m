@@ -58,7 +58,7 @@ for idc=1:length(views)
     vidObj = VideoReader(videoName);
     
     % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
-    imgs = read(vidObj, [frames_start+1, frames_end+1]);
+    % imgs = read(vidObj, [frames_start+1, frames_end+1]);
 
     for idni=1:length(frames)
         idn = frames(idni);
@@ -66,7 +66,7 @@ for idc=1:length(views)
         do_plot = false;
     	do_plot_write = false;
 
-        poseData = PoseLoaderJson19(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
+        poseData = PoseLoaderJson(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
         if isempty(poseData)
             fprintf('Empty posedata!\n');
             continue;
@@ -90,7 +90,8 @@ for idc=1:length(views)
             lms = lms(:, indices_j15, :);
         end
         try
-            im = imgs(:, :, :, idni);
+            im = read(vidObj, idn + 1);
+            % im = imgs(:, :, :, idni);
         catch
             fprintf('Error reading %s, frame %d\n', videoName, idn);
             im = im*0;
