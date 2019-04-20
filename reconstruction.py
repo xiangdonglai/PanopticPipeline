@@ -3,6 +3,7 @@ import SEQ_INFO
 import GPUtil
 import subprocess
 from script_indexMapGen_auto import IndexMap25to30_offset
+import threading
 
 
 def check_available_gpu(CONFIG):
@@ -13,6 +14,78 @@ def check_available_gpu(CONFIG):
             if GPU.memoryFree < 2500:   # needs around 2500MB memory per GPU
                 return False
     return True
+
+
+def reconstruct_face(seq_info, hd_frames_start, hd_frames_end, pose_folder):
+    # TODO: Get rid of Matlab?
+    done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
+    if not os.path.isfile(done_face_2d):
+        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_face.m; exit;"'.format(
+            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
+        os.system(cmd)
+    else:
+        print('2D face output exist, skip.')
+    assert os.path.exists(done_face_2d)
+
+    done_face_3d = os.path.join(seq_info.processed_path, 'done_face_3d.log')
+    if not os.path.isfile(done_face_3d):
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_undistort_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
+               seq_info.calib_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_recon_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_export_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+        open(done_face_3d, 'a').close()
+    else:
+        print('3D face output exist, skip.')
+    assert os.path.exists(done_face_3d)
+
+
+def reconstruct_hand(seq_info, hd_frames_start, hd_frames_end, pose_folder):
+    done_hand_2d = os.path.join(seq_info.processed_path, 'done_hand_2d.log')
+    if not os.path.isfile(done_hand_2d):
+        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_hand_v143_han.m; exit;"'.format(
+            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
+        os.system(cmd)
+    else:
+        print('2D hand output exist, skip')
+    assert os.path.isfile(done_hand_2d)
+
+    done_hand_3d = os.path.join(seq_info.processed_path, 'done_hand_3d.log')
+    if not os.path.isfile(done_hand_3d):
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_undistort_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
+               seq_info.calib_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_recon_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_export_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
+               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        assert proc.returncode == 0
+
+        open(done_hand_3d, 'a').close()
+    else:
+        print('3D hand output exist, skip.')
+        assert os.path.exists(done_hand_3d)
 
 
 def run_reconstruction(seq_info, CONFIG):
@@ -130,73 +203,17 @@ def run_reconstruction(seq_info, CONFIG):
     assert os.path.exists(done_hd_video)
 
     hd_frames_start, hd_frames_end = seq_info.read_hd_range()
-    done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
-    if not os.path.isfile(done_face_2d):
-        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_face.m; exit;"'.format(
-            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
-        os.system(cmd)
-    else:
-        print('2D face output exist, skip.')
-    assert os.path.exists(done_face_2d)
 
-    # TODO: Get rid of Matlab.
-    # TODO: The hand and face reconstruction can be parallelized.
-    # reconstruct face
-    done_face_3d = os.path.join(seq_info.processed_path, 'done_face_3d.log')
-    if not os.path.isfile(done_face_3d):
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_undistort_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
-               seq_info.calib_path, str(hd_frames_start), str(hd_frames_end)]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        assert proc.returncode == 0
+    # single thread version
+    # reconstruct_face(seq_info, hd_frames_start, hd_frames_end, pose_folder)
+    # reconstruct_hand(seq_info, hd_frames_start, hd_frames_end, pose_folder)
 
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_recon_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
-               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        assert proc.returncode == 0
+    # face and hand can be run in parallel
+    thread_face = threading.Thread(target=reconstruct_face, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
+    thread_face.start()
 
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'face_pm_export_hd', os.path.join(seq_info.processed_path, 'exp551b_fv101b_116k'),
-               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        assert proc.returncode == 0
-        open(done_face_3d, 'a').close()
-    else:
-        print('3D face output exist, skip.')
-    assert os.path.exists(done_face_3d)
+    thread_hand = threading.Thread(target=reconstruct_hand, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
+    thread_hand.start()
 
-    # reconstruct hand
-    done_hand_2d = os.path.join(seq_info.processed_path, 'done_hand_2d.log')
-    if not os.path.isfile(done_hand_2d):
-        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_hand_v143_han.m; exit;"'.format(
-            seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
-        os.system(cmd)
-    else:
-        print('2D hand output exist, skip')
-    assert os.path.isfile(done_hand_2d)
-
-    done_hand_3d = os.path.join(seq_info.processed_path, 'done_hand_3d.log')
-    if not os.path.isfile(done_hand_3d):
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_undistort_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
-               seq_info.calib_path, str(hd_frames_start), str(hd_frames_end)]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        assert proc.returncode == 0
-
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_recon_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
-               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        assert proc.returncode == 0
-
-        cmd = ['./Social-Capture-Ubuntu/SFMProject/build/SFMProject', 'hand_export_hd', os.path.join(seq_info.processed_path, 'hands_v143_120k'),
-               seq_info.calib_wo_distortion_path, str(hd_frames_start), str(hd_frames_end)]
-        proc = subprocess.Popen(cmd)
-        proc.wait()
-        assert proc.returncode == 0
-
-        open(done_hand_3d, 'a').close()
-    else:
-        print('3D hand output exist, skip.')
-        assert os.path.exists(done_hand_3d)
+    thread_face.join()
+    thread_hand.join()

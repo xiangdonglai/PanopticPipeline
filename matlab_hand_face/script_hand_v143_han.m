@@ -36,7 +36,7 @@ out_path = sprintf('%s/hands_v143_120k/', processed_path);
 mkdir(out_path);
 mkdir(fullfile(out_path, 'json'));
 mkdir(fullfile(out_path, 'images'));
-gpu_device = 2;   % TODO: change this!
+gpu_device = 0;   % TODO: change this!
 CPM_reproject_hands_coco19; 
 Converter_hand_json2txt_single(sprintf('%s/json/', out_path), sprintf('%s/handdetect_pm_org/hd_30/', out_path), frames_start, frames_end, 31);
 fclose(fopen(sprintf('%s/done_hand_2d.log', processed_path), 'a'));

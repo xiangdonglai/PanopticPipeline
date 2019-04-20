@@ -124,14 +124,9 @@ for idc=1:length(views)
             centps = zeros(2, 2, size(lms,3));
             cam_angles = zeros(1, size(lms,3));
         end
-        try
-            % im = imgs(:, :, :, idni);
-            % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
-            im = read(vidObj, idn + 1);
-        catch
-            fprintf('Error reading %s\n', test_image);
-            im = im*0;
-        end
+
+        % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
+        im = read(vidObj, idn + 1);
         
         clear joint_entries;
         im_o = im;

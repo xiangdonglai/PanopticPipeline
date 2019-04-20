@@ -89,13 +89,7 @@ for idc=1:length(views)
         if ~isempty(lms)
             lms = lms(:, indices_j15, :);
         end
-        try
-            im = read(vidObj, idn + 1);
-            % im = imgs(:, :, :, idni);
-        catch
-            fprintf('Error reading %s, frame %d\n', videoName, idn);
-            im = im*0;
-        end
+        im = read(vidObj, idn + 1);
         
         % imshow(im);
         % hold on;
