@@ -132,7 +132,7 @@ def run_reconstruction(seq_info, CONFIG):
     hd_frames_start, hd_frames_end = seq_info.read_hd_range()
     done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
     if not os.path.isfile(done_face_2d):
-        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = {}; run matlab_hand_face/script_face.m; exit;"'.format(
+        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_face.m; exit;"'.format(
             seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
         os.system(cmd)
     else:

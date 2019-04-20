@@ -78,7 +78,7 @@ for idc=1:length(views)
     videoName = sprintf('%s/hd_%02d_%02d.mp4', videoDir, cam.panel, cam.node);
     vidObj = VideoReader(videoName);
     % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
-    imgs = read(vidObj, [frames_start+1, frames_end+1]);
+    % imgs = read(vidObj, [frames_start+1, frames_end+1]);
 
     for idni=1:length(frames)
         idn = frames(idni);
@@ -125,7 +125,9 @@ for idc=1:length(views)
             cam_angles = zeros(1, size(lms,3));
         end
         try
-            im = imgs(:, :, :, idni);
+            % im = imgs(:, :, :, idni);
+            % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
+            im = read(vidObj, idn + 1);
         catch
             fprintf('Error reading %s\n', test_image);
             im = im*0;
