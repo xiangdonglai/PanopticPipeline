@@ -5,9 +5,10 @@ startIdx=$4
 startEnd=$5  # end index
 camNum=$6
 numgpu=$7
+category=$8
 
-rawFolder=/media/posefs${CAPTURES_NAS}/Captures/specialEvents
-saveFolder=/media/posefs${PROCESSED_NAS}/Processed/specialEvents
+rawFolder=/media/posefs${CAPTURES_NAS}/Captures/$category
+saveFolder=/media/posefs${PROCESSED_NAS}/Processed/$category
 mkdir -p $saveFolder
 
 ./peakdetect_vga_raw_arg.sh $rawFolder/$datasetName $saveFolder/${datasetName}/body_mpm $startIdx $startEnd $camNum $numgpu

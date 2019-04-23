@@ -50,6 +50,8 @@ for idc=1:length(nodeIdxs)
     cnt = cnt+1;
 end
 
+poseDataBuffer = {};
+
 for idc=1:length(views)
     tic
     cam = views(idc);
@@ -66,12 +68,21 @@ for idc=1:length(views)
         do_plot = false;
     	do_plot_write = false;
 
-        poseData = PoseLoaderJson(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
-        if isempty(poseData)
-            fprintf('Empty posedata!\n');
-            continue;
+        if idc == 1
+            poseData = PoseLoaderJson(poseDirHD,idn+pose_frame_offset,idn+pose_frame_offset);
+        	if isempty(poseData)
+        		fprintf('Empty poseData! %d\n', idn+pose_frame_offset);
+                continue;
+        	end
+            poseData = poseData{1};
+            poseDataBuffer{idni} = poseData;
+        else
+            if idni <= length(poseDataBuffer) && ~isempty(poseDataBuffer{idni})
+                poseData = poseDataBuffer{idni};
+            else
+                continue;
+            end
         end
-        poseData = poseData{1};
         
         hdidx = idn;
         fprintf('HD frame: %d\n', hdidx);

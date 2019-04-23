@@ -4,12 +4,13 @@ import GPUtil
 import subprocess
 from script_indexMapGen_auto import IndexMap25to30_offset
 import threading
+from time import time
 
 
 def check_available_gpu(CONFIG):
     if CONFIG['2D_detector'] == 0:
         GPUs = GPUtil.getGPUs()
-        assert len(GPUs) == 4   # designed to run on a GPU server with 4 GPUs.
+        # assert len(GPUs) == 4   # designed to run on a GPU server with 4 GPUs.
         for GPU in GPUs:
             if GPU.memoryFree < 2500:   # needs around 2500MB memory per GPU
                 return False
@@ -20,7 +21,7 @@ def reconstruct_face(seq_info, hd_frames_start, hd_frames_end, pose_folder):
     # TODO: Get rid of Matlab?
     done_face_2d = os.path.join(seq_info.processed_path, 'done_face_2d.log')
     if not os.path.isfile(done_face_2d):
-        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_face.m; exit;"'.format(
+        cmd = 'matlab -nodisplay -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_face.m; exit;"'.format(
             seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
         os.system(cmd)
     else:
@@ -55,7 +56,7 @@ def reconstruct_face(seq_info, hd_frames_start, hd_frames_end, pose_folder):
 def reconstruct_hand(seq_info, hd_frames_start, hd_frames_end, pose_folder):
     done_hand_2d = os.path.join(seq_info.processed_path, 'done_hand_2d.log')
     if not os.path.isfile(done_hand_2d):
-        cmd = 'matlab -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_hand_v143_han.m; exit;"'.format(
+        cmd = 'matlab -nodisplay -r "seq_name = \'{}\'; processed_path = \'{}\'; calib_name = \'{}\'; frames_start = {}; frames_end = {}; pose_folder = \'{}\'; run matlab_hand_face/script_hand_v143_han.m; exit;"'.format(
             seq_info.name, seq_info.processed_path, seq_info.calib, hd_frames_start, hd_frames_end, pose_folder)
         os.system(cmd)
     else:
@@ -92,6 +93,8 @@ def run_reconstruction(seq_info, CONFIG):
     assert(isinstance(seq_info, SEQ_INFO.SEQ_INFO))
     assert(type(CONFIG) == dict)
 
+    start = time()
+
     done_pose_file = os.path.join(seq_info.processed_path, 'done_pose_org.log')
 
     if not os.path.exists(done_pose_file):
@@ -108,7 +111,7 @@ def run_reconstruction(seq_info, CONFIG):
 
             # now run the program
             assert check_available_gpu(CONFIG)
-            cmd = ['bash', 'run_dome.sh', seq_info.captures_nas, seq_info.processed_nas, seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num), str(seq_info.num_gpu)]
+            cmd = ['bash', 'run_dome.sh', seq_info.captures_nas, seq_info.processed_nas, seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num), str(seq_info.num_gpu), str(seq_info.category)]
             proc = subprocess.Popen(cmd, cwd='./caffe_demo/')
             proc.wait()
 
@@ -116,13 +119,17 @@ def run_reconstruction(seq_info, CONFIG):
         elif CONFIG['2D_detector'] == 1:
             assert os.path.isfile('openpose/build/examples/dome/1_dome_input_and_output.bin')
             cmd = ['bash', 'run_multi_donglai.sh', seq_info.captures_nas, seq_info.processed_nas,
-                   seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num), str(seq_info.num_gpu)]
+                   seq_info.name, str(seq_info.start_idx), str(seq_info.end_idx), str(seq_info.cam_num), str(seq_info.num_gpu), seq_info.category]
             proc = subprocess.Popen(cmd, cwd='./openpose/')
             proc.wait()
     else:
         print('2D pose detection files exist, skip.')
 
     assert os.path.exists(done_pose_file)
+
+    pose2d_time = time()
+    with open('pose2d_time.txt', 'w') as f:
+        f.write('2D pose time: {}'.format(pose2d_time - start))
 
     if CONFIG['2D_detector'] == 0:
         pts = 19  # flags to call SFMProject
@@ -167,7 +174,7 @@ def run_reconstruction(seq_info, CONFIG):
     done_recon_hd = os.path.join(seq_info.processed_path, 'done_recon_hd.log')
     if not os.path.isfile(done_recon_hd):
         # generate index mapping from VGA to HD.
-        IndexMap25to30_offset(seq_info.captures_nas, seq_info.processed_nas, 'specialEvents', seq_info.name)
+        IndexMap25to30_offset(seq_info.captures_nas, seq_info.processed_nas, seq_info.category, seq_info.name)
         assert os.path.isfile(os.path.join(seq_info.processed_path, 'body_mpm', 'IndexMap25to30_offset.txt'))
 
         calibPath = seq_info.calib_wo_distortion_path
@@ -187,6 +194,10 @@ def run_reconstruction(seq_info, CONFIG):
     else:
         print('3D hd reconstruction files exist, skip.')
 
+    recon3d_time = time()
+    with open('recon3d_time.txt', 'w') as f:
+        f.write('3D recon time: {}'.format(recon3d_time - start))
+
     done_hd_video = os.path.join(seq_info.processed_path, 'done_hd_video.log')
     if not os.path.isfile(done_hd_video):
         # extract HD videos (for face and hand)
@@ -195,7 +206,7 @@ def run_reconstruction(seq_info, CONFIG):
                 if machineIdx == 46 and diskIdx == 2:
                     continue
                 cmd = 'bash videoGen_hd.sh {} {} {} {} {}' \
-                    .format(seq_info.captures_nas, 'specialEvents', seq_info.name, machineIdx, diskIdx)
+                    .format(seq_info.captures_nas, seq_info.category, seq_info.name, machineIdx, diskIdx)
                 os.system(cmd)
         open(done_hd_video, 'a').close()
     else:
@@ -209,6 +220,8 @@ def run_reconstruction(seq_info, CONFIG):
     # reconstruct_hand(seq_info, hd_frames_start, hd_frames_end, pose_folder)
 
     # face and hand can be run in parallel
+    face_hand_start = time()
+
     thread_face = threading.Thread(target=reconstruct_face, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
     thread_face.start()
 
@@ -217,3 +230,8 @@ def run_reconstruction(seq_info, CONFIG):
 
     thread_face.join()
     thread_hand.join()
+
+    face_hand_end = time()
+    with open('face_hand.txt', 'w') as f:
+        f.write('face hand: {}'.format(face_hand_end - face_hand_start))
+

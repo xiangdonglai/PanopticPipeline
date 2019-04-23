@@ -17,22 +17,24 @@ CONFIG = {
     # Config for Sequences
 
     # sequences names
-    'sequence_names': ['190405_pose8'],
+    'sequence_names': ['171204_pose1'],
     # calibration data
-    'calibration_data': ['190405_calib_norm'],
+    'calibration_data': ['171204_calib_norm'],
     # start idx
-    'start_index': [100],
+    'start_index': [1000],
     # end idx
-    'end_index': [7000],
+    'end_index': [1250],
     # number of camera
     'camera_number': [140],
     # Captures nas
-    'captures_nas': ['12a'],
+    'captures_nas': ['11a'],
     # Processed nas
     'processed_nas': ['11b'],
     # Number of GPU
     'num_gpu': [1],
+    # category
+    'category': ['Pose'],
 
     # Options for 2D KP (0 for caffe_demo, 1 for Openpose_Dome)
-    '2D_detector': 0
+    '2D_detector': 1
 }

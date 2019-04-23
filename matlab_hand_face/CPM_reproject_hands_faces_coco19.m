@@ -94,7 +94,7 @@ for idc=1:length(views)
             poseData = poseData{1};
             poseDataBuffer{idni} = poseData;
         else
-            if idni <= length(poseDataBuffer)
+            if idni <= length(poseDataBuffer) && ~isempty(poseDataBuffer{idni})
                 poseData = poseDataBuffer{idni};
             else
                 continue;
