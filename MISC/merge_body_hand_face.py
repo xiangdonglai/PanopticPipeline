@@ -29,7 +29,7 @@ if __name__ == '__main__':
         os.mkdir(total_root)
 
     for i in range(start, end + 1):
-        print('processing file {} [start - end]'.format(i))
+        print('processing file {} [{} - {}]'.format(i, start, end))
 
         bodyFile = os.path.join(body_root, 'body3DScene_{:08d}.json'.format(i))
         with open(bodyFile) as f:
