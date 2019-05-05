@@ -1,8 +1,25 @@
 from config import CONFIG
 from SEQ_INFO import parse_seq
-from reconstruction import run_reconstruction
+# from reconstruction import run_reconstruction
+import GPUtil
+import libtmux
 import subprocess
-import os
+import os, sys
+import json
+
+
+def assign_task_to_GPU(nGPU, CONFIG):
+    assert nGPU > 0
+    for i in range(nGPU):
+        filename = 'GPU_{}.json'.format(i)
+        GPU_config = {}
+        for keyname in ('sequence_names', 'calibration_data', 'start_index', 'end_index', 'camera_number', 'captures_nas', 'processed_nas', 'category'):
+            # assign tasks to GPUs in turn
+            GPU_config[keyname] = CONFIG[keyname][i::nGPU] 
+        GPU_config['2D_detector'] = CONFIG['2D_detector']
+        with open(filename, 'w') as f:
+            json.dump(GPU_config, f)
+
 
 if __name__ == '__main__':
     if CONFIG['run_calibration']:
@@ -45,6 +62,31 @@ if __name__ == '__main__':
 
     assert(CONFIG['2D_detector'] in (0, 1))
 
+    GPUs = GPUtil.getGPUs()  # get number of GPUs
+    nGPU = len(GPUs)
+    nseq = len(seq_infos)
+    if nseq < nGPU:
+        # if there are fewer sequences than available GPU, then reduce to the number needed
+        nGPU = nseq
+    assign_task_to_GPU(nGPU, CONFIG)
+
     # launch reconstruction
-    for seq in seq_infos:
-        run_reconstruction(seq, CONFIG)
+    server = libtmux.Server()
+    sessions = server.list_sessions()
+    for iGPU in range(nGPU):
+        session_name = 'GPU_{}'.format(iGPU)
+        if server.find_where({'session_name': session_name}):
+            print('Session: {} exists in tmux, skip'.format(session_name))
+            continue
+        # tmux usage: tmux new-session -d -s ${session} '${command}; exec bash' (exec bash to keep the session alive after tasks finish)
+        # sys.executable is the current Python interpretor in use
+        command = 'tmux new-session -d -s {}'.format(session_name)
+        os.system(command)
+        # send a Enter, for skynet
+        command = 'tmux send-keys -t {} Enter'.format(session_name)
+        os.system(command)
+        command = 'tmux send-keys -t {} "export CUDA_VISIBLE_DEVICES={:}" Enter'.format(session_name, iGPU)
+        os.system(command)
+        command = 'tmux send-keys -t {} "{} reconstruction.py --gpu {}" Enter'.format(session_name, sys.executable, iGPU)
+        os.system(command)
+        print('Launch job for GPU #{} in tmux session: {}'.format(iGPU, session_name))
