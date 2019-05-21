@@ -8,7 +8,9 @@ git checkout 2.4.9
 
 openpose - normal compile
 
-SOcial-Capture**
+Copy the Body_25b model
+
+Compile Social-Capture**
 
 sudo apt-get install libglew-dev
 sudo apt-get install libxmu-dev libxi-dev
