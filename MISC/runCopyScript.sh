@@ -1,7 +1,7 @@
-BASENAME='190611_asl'
-BASE_PROCESSED_PATH='/media/posefs5b/Processed/specialEvents/'
+BASENAME='190419_asl'
+BASE_PROCESSED_PATH='/media/posefs11b/Processed/specialEvents/'
 
-for i in 1 2 3 4 5 6 7 8 10 11 12 13 14 15
+for i in 2 4 5
 do
     SEQNAME="${BASENAME}${i}"
     echo $SEQNAME

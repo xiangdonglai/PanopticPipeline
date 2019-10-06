@@ -207,17 +207,17 @@ def run_reconstruction(seq_info, CONFIG):
     hd_frames_start, hd_frames_end = seq_info.read_hd_range()
 
     # single thread version
-    # reconstruct_face(seq_info, hd_frames_start, hd_frames_end, pose_folder)
-    # reconstruct_hand(seq_info, hd_frames_start, hd_frames_end, pose_folder)
+    reconstruct_face(seq_info, hd_frames_start, hd_frames_end, pose_folder)
+    reconstruct_hand(seq_info, hd_frames_start, hd_frames_end, pose_folder)
 
-    thread_face = threading.Thread(target=reconstruct_face, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
-    thread_face.start()
+    # thread_face = threading.Thread(target=reconstruct_face, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
+    # thread_face.start()
 
-    thread_hand = threading.Thread(target=reconstruct_hand, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
-    thread_hand.start()
+    # thread_hand = threading.Thread(target=reconstruct_hand, args=(seq_info, hd_frames_start, hd_frames_end, pose_folder))
+    # thread_hand.start()
 
-    thread_face.join()
-    thread_hand.join()
+    # thread_face.join()
+    # thread_hand.join()
 
 
 if __name__ == '__main__':

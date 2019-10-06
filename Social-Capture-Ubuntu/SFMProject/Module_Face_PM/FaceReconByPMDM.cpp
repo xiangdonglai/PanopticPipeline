@@ -528,9 +528,21 @@ void CFaceRecon_pm::Face_Landmark_Reconstruction_hd(const char* handDetectFilePa
 		detectedHandVectRemain = remains_updated;
 	}
 
-	if(hand2DVect_multiCam.size()>0 && hand2DVect_multiCam.front().size()>0)
+    // Donglai
+    int landmakrNum = -1;
+    for (auto i = 0u; i < hand2DVect_multiCam.size(); i++)
+    {
+        if (hand2DVect_multiCam[i].size() > 0)
+        {
+            landmakrNum = hand2DVect_multiCam[i].front().m_faceLandmarkVect.size();
+            assert(landmakrNum == 70 || landmakrNum == 24);
+        }
+    }
+
+	// if(hand2DVect_multiCam.size()>0 && hand2DVect_multiCam.front().size()>0)
+	if(hand2DVect_multiCam.size()>0 && landmakrNum > -1)
 	{
-		int landmakrNum = hand2DVect_multiCam.front().front().m_faceLandmarkVect.size();
+		// int landmakrNum = hand2DVect_multiCam.front().front().m_faceLandmarkVect.size();
 		if(landmakrNum==70)
 		{
 			FacePointsTriangulation_face70(hand2DVect_multiCam, hand2DGroupVect,handReconResult,true);

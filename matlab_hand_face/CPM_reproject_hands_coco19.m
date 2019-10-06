@@ -57,6 +57,9 @@ for idc=1:length(views)
     cam = views(idc);
     cam.M = [cam.R, cam.t(:); 0 0 0 1];
     videoName = sprintf('%s/hd_%02d_%02d.mp4', videoDir, cam.panel, cam.node);
+    if ~isfile(videoName)
+        continue;
+    end
     vidObj = VideoReader(videoName);
     
     % add 1 here: the video index read by Matlab starts from 1, our image/skeleton index starts from 0
@@ -90,6 +93,12 @@ for idc=1:length(views)
         test_imagen = sprintf('%02d_%02d_%08d.jpg', cam.panel, cam.node, hdidx);
         
         out_file = sprintf('%s/json/%02d_%02d/%s_l.json',out_path, cam.panel, cam.node, test_imagen);
+        try
+            data=loadjson((out_file));
+            fprintf('Found %s, skipping\n', out_file);
+            continue;
+        catch
+        end
 
         lms = [];
         for idp=1:length(poseData.bodies)
